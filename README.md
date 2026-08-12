@@ -144,6 +144,8 @@ cp config.example.json config.json
 | `grok2api_remote_url` / `grok2api_admin_username` / `grok2api_admin_password` | 远程 Grok2API Admin API（可选） |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 
+Web 控制台的“远程 Grok2API”卡片可保存以上配置并测试管理员登录。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。
+
 ### 环境变量
 
 | 变量 | 默认 | 说明 |

@@ -188,6 +188,9 @@ def test_email_service_and_domain_rotation_panel_structure():
     assert 'function toggleEmailProviderSecret(' in mon
     assert '/api/email-provider' in mon
     assert '/api/email-provider/test' in mon
+    assert '/api/grok2api' in mon
+    assert '/api/grok2api/test' in mon
+    assert 'id="grok2api-password"' in mon
     assert 'Apple Mail API' not in html
     assert 'id="domain-advanced"' in html
     assert '域名轮换 <span class="domain-advanced-meta">高级设置</span>' in html

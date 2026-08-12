@@ -53,6 +53,11 @@ try:
         save_email_provider_config,
         test_email_provider_config,
     )
+    from webui.grok2api_store import (
+        read_grok2api_config,
+        save_grok2api_config,
+        test_grok2api_config,
+    )
     from webui.process_utils import (
         find_managed_processes,
         terminate_managed_processes,
@@ -89,6 +94,11 @@ except ImportError:  # running as script from webui/
         read_email_provider_config,
         save_email_provider_config,
         test_email_provider_config,
+    )
+    from grok2api_store import (  # type: ignore
+        read_grok2api_config,
+        save_grok2api_config,
+        test_grok2api_config,
     )
     from process_utils import (  # type: ignore
         find_managed_processes,
@@ -1891,7 +1901,7 @@ HTML = r"""<!DOCTYPE html>
     <div class="control-grid">
       <div class="field field-token">
         <label for="monitor-token">访问令牌</label>
-        <input id="monitor-token" type="password" autocomplete="off" placeholder="MONITOR_TOKEN" onchange="getToken(); refresh(); refreshRecovery(); refreshProxies(); refreshEmailProvider(); refreshEmailDomains()" onblur="getToken()"/>
+        <input id="monitor-token" type="password" autocomplete="off" placeholder="MONITOR_TOKEN" onchange="getToken(); refresh(); refreshRecovery(); refreshProxies(); refreshEmailProvider(); refreshEmailDomains(); refreshGrok2API()" onblur="getToken()"/>
       </div>
       <div class="field field-mode">
         <label for="mode">运行模式</label>
@@ -2203,6 +2213,28 @@ HTML = r"""<!DOCTYPE html>
     </div>
     <div class="bar-wrap"><div class="bar" id="bar"></div></div>
     <div class="progress-sub" id="prog-sub"></div>
+  </section>
+
+  <section class="card panel" aria-labelledby="grok2api-title">
+    <div class="section-head">
+      <h2 id="grok2api-title">远程 Grok2API</h2>
+      <span class="section-meta mono" id="grok2api-status">读取配置</span>
+    </div>
+    <div class="mail-provider-fields">
+      <div class="field"><label for="grok2api-enabled">自动写入</label><select id="grok2api-enabled"><option value="true">开启</option><option value="false">关闭</option></select></div>
+      <div class="field"><label for="grok2api-url">远程地址</label><input id="grok2api-url" type="url" placeholder="https://grok2api.example.com" autocomplete="off"/></div>
+      <div class="field"><label for="grok2api-username">管理员账号</label><input id="grok2api-username" autocomplete="username"/></div>
+      <div class="field">
+        <label for="grok2api-password">管理员密码</label>
+        <input id="grok2api-password" type="password" autocomplete="new-password" placeholder="留空保留已保存密码" oninput="grok2apiPasswordInput()"/>
+        <div class="mail-secret-state" id="grok2api-password-state" hidden><span class="mail-secret-note" id="grok2api-password-note">已保存密码</span><button type="button" class="mail-secret-clear" id="grok2api-password-clear" onclick="toggleGrok2APIPasswordClear()">清除</button></div>
+      </div>
+    </div>
+    <div class="button-group" style="margin-top:12px">
+      <button class="primary" id="grok2api-save" onclick="saveGrok2APIConfig()">保存配置</button>
+      <button id="grok2api-test" onclick="testGrok2APIConnection()">测试连接</button>
+    </div>
+    <div class="msg" id="grok2api-msg" role="status" aria-live="polite"></div>
   </section>
 
   <section class="card panel recovery-panel" aria-labelledby="recovery-title">
@@ -2841,6 +2873,66 @@ async function testEmailProviderConnection() {
   } catch (e) { setMsg("mail-provider-msg", String(e.message || e), "err"); }
   button.disabled = false;
 }
+let grok2apiPasswordClear = false;
+function renderGrok2APIConfig(data) {
+  document.getElementById("grok2api-enabled").value = data.enabled ? "true" : "false";
+  document.getElementById("grok2api-url").value = data.remote_url || "";
+  document.getElementById("grok2api-username").value = data.username || "";
+  document.getElementById("grok2api-password").value = "";
+  grok2apiPasswordClear = false;
+  const state = document.getElementById("grok2api-password-state");
+  state.hidden = !data.password_configured;
+  document.getElementById("grok2api-password-note").textContent = "已保存密码";
+  document.getElementById("grok2api-password-note").className = "mail-secret-note";
+  document.getElementById("grok2api-password-clear").textContent = "清除";
+  document.getElementById("grok2api-status").textContent = data.configured ? "已配置" : "未完整配置";
+}
+function collectGrok2APISettings() {
+  return {
+    enabled: document.getElementById("grok2api-enabled").value === "true",
+    remote_url: document.getElementById("grok2api-url").value,
+    username: document.getElementById("grok2api-username").value,
+    password: document.getElementById("grok2api-password").value,
+  };
+}
+function toggleGrok2APIPasswordClear() {
+  grok2apiPasswordClear = !grok2apiPasswordClear;
+  const note = document.getElementById("grok2api-password-note");
+  note.textContent = grok2apiPasswordClear ? "保存后清除密码" : "已保存密码";
+  note.className = "mail-secret-note" + (grok2apiPasswordClear ? " warn" : "");
+  document.getElementById("grok2api-password-clear").textContent = grok2apiPasswordClear ? "撤销" : "清除";
+}
+function grok2apiPasswordInput() {
+  if (document.getElementById("grok2api-password").value && grok2apiPasswordClear) toggleGrok2APIPasswordClear();
+}
+async function refreshGrok2API(authHelp = false) {
+  try {
+    const result = await api("/api/grok2api?_=" + Date.now(), { authHelp });
+    renderGrok2APIConfig(result);
+    if (!result.ok && result.error) setMsg("grok2api-msg", result.error, "err");
+  } catch (e) { setMsg("grok2api-msg", String(e.message || e), "err"); }
+}
+async function saveGrok2APIConfig() {
+  const button = document.getElementById("grok2api-save");
+  button.disabled = true;
+  setMsg("grok2api-msg", "正在保存…", "");
+  try {
+    const result = await api("/api/grok2api", { method: "POST", body: JSON.stringify({settings: collectGrok2APISettings(), clear_password: grok2apiPasswordClear}) });
+    renderGrok2APIConfig(result);
+    setMsg("grok2api-msg", "远程 Grok2API 配置已保存", "ok");
+  } catch (e) { setMsg("grok2api-msg", String(e.message || e), "err"); }
+  button.disabled = false;
+}
+async function testGrok2APIConnection() {
+  const button = document.getElementById("grok2api-test");
+  button.disabled = true;
+  setMsg("grok2api-msg", "正在测试管理员登录…", "");
+  try {
+    const result = await api("/api/grok2api/test", { method: "POST", body: JSON.stringify({settings: collectGrok2APISettings(), clear_password: grok2apiPasswordClear}) });
+    setMsg("grok2api-msg", result.detail || "连接正常", "ok");
+  } catch (e) { setMsg("grok2api-msg", String(e.message || e), "err"); }
+  button.disabled = false;
+}
 function domainStatusLabel(status) {
   return ({ active: "轮换中", standby: "待命", blocked: "已拉黑", disabled: "已停用" })[status] || "待命";
 }
@@ -3422,6 +3514,7 @@ refreshRecovery();
 setInterval(refreshRecovery, 5000);
 refreshBfs();
 setInterval(refreshBfs, 15000);
+refreshGrok2API();
 setInterval(() => {
   if (document.body.classList.contains("proxy-view-open")) refreshProxies(false);
   if (document.body.classList.contains("domain-view-open")) refreshEmailDomains(false);
@@ -3536,7 +3629,7 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/health":
             self._json(200, {"ok": True})
             return
-        if u.path in ("/api/status", "/api/blacklist", "/api/stats", "/api/control", "/api/recovery", "/api/proxies", "/api/email-provider", "/api/email-domains", "/api/bfs"):
+        if u.path in ("/api/status", "/api/blacklist", "/api/stats", "/api/control", "/api/recovery", "/api/proxies", "/api/email-provider", "/api/email-domains", "/api/grok2api", "/api/bfs"):
             if not self._require_read():
                 return
         if u.path == "/api/status":
@@ -3583,6 +3676,12 @@ class Handler(BaseHTTPRequestHandler):
         if u.path == "/api/email-provider":
             try:
                 self._json(200, read_email_provider_config())
+            except Exception as e:
+                self._json(500, {"ok": False, "error": redact_log_line(str(e))})
+            return
+        if u.path == "/api/grok2api":
+            try:
+                self._json(200, read_grok2api_config())
             except Exception as e:
                 self._json(500, {"ok": False, "error": redact_log_line(str(e))})
             return
@@ -3706,6 +3805,30 @@ class Handler(BaseHTTPRequestHandler):
                     body.get("provider"),
                     body.get("settings") or {},
                     clear_secrets=body.get("clear_secrets"),
+                )
+                self._json(200 if result.get("ok") else 424, result)
+            except ValueError as e:
+                self._json(400, {"ok": False, "error": redact_log_line(str(e))})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": redact_log_line(str(e))})
+            return
+        if u.path == "/api/grok2api":
+            try:
+                result = save_grok2api_config(
+                    body.get("settings") or {},
+                    clear_password=body.get("clear_password", False),
+                )
+                self._json(200, result)
+            except ValueError as e:
+                self._json(400, {"ok": False, "error": redact_log_line(str(e))})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": redact_log_line(str(e))})
+            return
+        if u.path == "/api/grok2api/test":
+            try:
+                result = test_grok2api_config(
+                    body.get("settings") or {},
+                    clear_password=body.get("clear_password", False),
                 )
                 self._json(200 if result.get("ok") else 424, result)
             except ValueError as e:

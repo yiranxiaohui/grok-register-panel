@@ -6,6 +6,7 @@
 
 - Persist owner-only batch traffic history and show rolling average traffic per batch and per successful account in the live panel.
 - Upload converted accounts to a remote Grok2API instance through its authenticated Admin API.
+- Configure and test remote Grok2API uploads from the authenticated Web panel without returning stored passwords to the browser.
 
 ## 0.4.2 - 2026-08-11
 
