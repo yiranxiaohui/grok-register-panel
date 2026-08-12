@@ -1760,10 +1760,11 @@ def upload_grok2api_auth_remote(
     timeout: int = 30,
     proxy: str = "",
 ) -> str:
-    """Login and import one Build credential with its fixed account proxy.
+    """Login directly and import one Build credential with its fixed account proxy.
 
-    ``proxy`` remains the transport proxy for the OAuth/Admin requests and is
-    also written as Grok2API's per-account ``proxy_url`` import metadata.
+    ``proxy`` is written only as Grok2API's per-account ``proxy_url`` import
+    metadata. Admin requests deliberately use the server's direct route so a
+    public account proxy never has to reach a private Grok2API deployment.
     """
     base = str(base_url or "").strip().rstrip("/")
     user = str(username or "").strip()
@@ -1773,12 +1774,14 @@ def upload_grok2api_auth_remote(
     if not user or not secret:
         raise ValueError("Grok2API 管理员账号或密码为空")
 
-    proxies = {"http": proxy, "https": proxy} if proxy else None
+    # An empty explicit proxy disables libcurl's HTTP(S)_PROXY environment
+    # fallback as well as the per-account proxy passed by the worker.
+    direct_proxies = {"all": ""}
     login = requests.post(
         f"{base}/api/admin/v1/auth/login",
         json={"username": user, "password": secret},
         timeout=timeout,
-        proxies=proxies,
+        proxies=direct_proxies,
         impersonate="chrome",
     )
     if login.status_code >= 400:
@@ -1798,7 +1801,7 @@ def upload_grok2api_auth_remote(
         headers={"Authorization": f"Bearer {access_token}"},
         files={"files": (name, document, "application/json")},
         timeout=timeout,
-        proxies=proxies,
+        proxies=direct_proxies,
         impersonate="chrome",
     )
     if imported.status_code >= 400:

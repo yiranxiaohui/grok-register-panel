@@ -25,7 +25,7 @@ class _Response:
 
 
 class Grok2APIRemoteUploadTests(unittest.TestCase):
-    def test_login_then_imports_account_with_its_proxy(self):
+    def test_imports_account_proxy_without_using_it_for_admin_transport(self):
         calls = []
 
         def fake_post(url, **kwargs):
@@ -57,8 +57,8 @@ class Grok2APIRemoteUploadTests(unittest.TestCase):
         self.assertEqual(document["refresh_token"], "refresh")
         self.assertEqual(document["email"], "user@example.test")
         self.assertEqual(document["proxy_url"], account_proxy)
-        self.assertEqual(calls[0][1]["proxies"], {"http": account_proxy, "https": account_proxy})
-        self.assertEqual(calls[1][1]["proxies"], {"http": account_proxy, "https": account_proxy})
+        self.assertEqual(calls[0][1]["proxies"], {"all": ""})
+        self.assertEqual(calls[1][1]["proxies"], {"all": ""})
 
     def test_direct_import_omits_account_proxy(self):
         calls = []
@@ -80,7 +80,8 @@ class Grok2APIRemoteUploadTests(unittest.TestCase):
 
         document = json.loads(calls[1][1]["files"]["files"][1])
         self.assertNotIn("proxy_url", document)
-        self.assertIsNone(calls[0][1]["proxies"])
+        self.assertEqual(calls[0][1]["proxies"], {"all": ""})
+        self.assertEqual(calls[1][1]["proxies"], {"all": ""})
 
     def test_does_not_expose_login_response_body_on_failure(self):
         with patch.object(auth.requests, "post", return_value=_Response(status_code=401, text="password leaked")):
