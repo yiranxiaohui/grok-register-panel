@@ -5,6 +5,7 @@ from __future__ import annotations
 import atexit
 import base64
 import hashlib
+import ipaddress
 import json
 import os
 import select
@@ -15,7 +16,7 @@ import ssl
 import threading
 import time
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlparse, urlsplit, urlunsplit
 
 from secure_files import atomic_write_json, ensure_private_dir, exclusive_file_lock
 
@@ -338,6 +339,46 @@ def _rewrite_headers(head: bytes, authorization: bytes | None) -> bytes:
     return b"\r\n".join(output) + b"\r\n\r\n"
 
 
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ConnectionError("connection closed during proxy handshake")
+        data.extend(chunk)
+    return bytes(data)
+
+
+def _target_from_request(head: bytes) -> tuple[str, int]:
+    first_line = head.split(b"\r\n", 1)[0]
+    parts = first_line.split(b" ", 2)
+    if len(parts) != 3:
+        raise ValueError("invalid HTTP proxy request line")
+    method, target, _version = parts
+    if method.upper() == b"CONNECT":
+        parsed = urlparse("//" + target.decode("ascii", "strict"))
+        if not parsed.hostname:
+            raise ValueError("CONNECT target host is missing")
+        return parsed.hostname, parsed.port or 443
+
+    parsed = urlsplit(target.decode("ascii", "strict"))
+    if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        raise ValueError("absolute HTTP proxy target is required")
+    return parsed.hostname, parsed.port or (443 if parsed.scheme == "https" else 80)
+
+
+def _rewrite_origin_form(head: bytes) -> bytes:
+    lines = head.split(b"\r\n")
+    parts = lines[0].split(b" ", 2)
+    if len(parts) != 3:
+        raise ValueError("invalid HTTP proxy request line")
+    method, target, version = parts
+    parsed = urlsplit(target.decode("ascii", "strict"))
+    path = urlunsplit(("", "", parsed.path or "/", parsed.query, ""))
+    lines[0] = b" ".join((method, path.encode("ascii"), version))
+    return b"\r\n".join(lines)
+
+
 class _MeterHandler(socketserver.BaseRequestHandler):
     def handle(self) -> None:
         self.server.meter.handle_client(self.request)  # type: ignore[attr-defined]
@@ -356,6 +397,8 @@ class _ProxyMeter:
         self.host = parsed.hostname or ""
         self.port = parsed.port or (443 if parsed.scheme == "https" else 80)
         self.authorization = _proxy_authorization(parsed)
+        self.upstream_username = unquote(parsed.username or "")
+        self.upstream_password = unquote(parsed.password or "")
         self.local_username = "meter"
         self.local_password = secrets.token_urlsafe(18)
         self.local_authorization = _basic_authorization(
@@ -383,6 +426,61 @@ class _ProxyMeter:
             context = ssl.create_default_context()
             upstream = context.wrap_socket(upstream, server_hostname=self.host)
         return upstream
+
+    def _connect_socks_target(self, target_host: str, target_port: int) -> socket.socket:
+        upstream = self._connect_upstream()
+        try:
+            has_auth = bool(self.upstream_username or self.upstream_password)
+            upstream.sendall(b"\x05\x01\x02" if has_auth else b"\x05\x01\x00")
+            version, method = _recv_exact(upstream, 2)
+            expected_method = 2 if has_auth else 0
+            if version != 5 or method != expected_method:
+                raise ConnectionError("SOCKS5 upstream rejected authentication method")
+
+            if has_auth:
+                username = self.upstream_username.encode("utf-8")
+                password = self.upstream_password.encode("utf-8")
+                if not 1 <= len(username) <= 255 or len(password) > 255:
+                    raise ValueError("SOCKS5 credentials are outside protocol limits")
+                upstream.sendall(
+                    b"\x01"
+                    + bytes((len(username),))
+                    + username
+                    + bytes((len(password),))
+                    + password
+                )
+                auth_version, auth_status = _recv_exact(upstream, 2)
+                if auth_version != 1 or auth_status != 0:
+                    raise ConnectionError("SOCKS5 upstream authentication failed")
+
+            try:
+                ip = ipaddress.ip_address(target_host)
+            except ValueError:
+                encoded_host = target_host.encode("idna")
+                if not 1 <= len(encoded_host) <= 255:
+                    raise ValueError("SOCKS5 target host is outside protocol limits")
+                address = b"\x03" + bytes((len(encoded_host),)) + encoded_host
+            else:
+                address = (b"\x01" if ip.version == 4 else b"\x04") + ip.packed
+            upstream.sendall(
+                b"\x05\x01\x00" + address + int(target_port).to_bytes(2, "big")
+            )
+            reply_version, reply_code, _reserved, address_type = _recv_exact(upstream, 4)
+            if reply_version != 5 or reply_code != 0:
+                raise ConnectionError(f"SOCKS5 upstream connect failed ({reply_code})")
+            if address_type == 1:
+                _recv_exact(upstream, 4)
+            elif address_type == 4:
+                _recv_exact(upstream, 16)
+            elif address_type == 3:
+                _recv_exact(upstream, _recv_exact(upstream, 1)[0])
+            else:
+                raise ConnectionError("SOCKS5 upstream returned an invalid address type")
+            _recv_exact(upstream, 2)
+            return upstream
+        except Exception:
+            upstream.close()
+            raise
 
     def _send_error(self, client: socket.socket) -> None:
         try:
@@ -431,14 +529,31 @@ class _ProxyMeter:
                 return
             first_line = head.split(b"\r\n", 1)[0]
             method = first_line.split(b" ", 1)[0].upper()
-            upstream = self._connect_upstream()
-            upstream.settimeout(30)
-            outbound = _rewrite_headers(head, self.authorization)
-            if method != b"CONNECT":
-                outbound += rest
-            upstream.sendall(outbound)
-            self.state.update(bytes_up=len(outbound))
-            if method == b"CONNECT":
+            if self.scheme in ("socks5", "socks5h"):
+                target_host, target_port = _target_from_request(head)
+                upstream = self._connect_socks_target(target_host, target_port)
+                upstream.settimeout(30)
+                if method == b"CONNECT":
+                    response = b"HTTP/1.1 200 Connection Established\r\n\r\n"
+                    client.sendall(response)
+                    self.state.update(bytes_down=len(response))
+                    tunnel_established = True
+                    if rest:
+                        upstream.sendall(rest)
+                        self.state.update(bytes_up=len(rest))
+                else:
+                    outbound = _rewrite_origin_form(_rewrite_headers(head, None)) + rest
+                    upstream.sendall(outbound)
+                    self.state.update(bytes_up=len(outbound))
+            else:
+                upstream = self._connect_upstream()
+                upstream.settimeout(30)
+                outbound = _rewrite_headers(head, self.authorization)
+                if method != b"CONNECT":
+                    outbound += rest
+                upstream.sendall(outbound)
+                self.state.update(bytes_up=len(outbound))
+            if method == b"CONNECT" and self.scheme not in ("socks5", "socks5h"):
                 response_head, response_rest = _read_headers(upstream)
                 response = response_head + b"\r\n\r\n" + response_rest
                 client.sendall(response)
@@ -478,7 +593,7 @@ class _MeterManager:
 
     def wrap(self, upstream_url: str) -> str:
         parsed = urlparse(str(upstream_url or "").strip())
-        if parsed.scheme not in ("http", "https") or not parsed.hostname:
+        if parsed.scheme not in ("http", "https", "socks5", "socks5h") or not parsed.hostname:
             key = hashlib.sha256(str(upstream_url or "").encode()).hexdigest()
             with self.lock:
                 if key not in self.unmetered:

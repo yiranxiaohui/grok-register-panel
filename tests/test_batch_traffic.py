@@ -51,6 +51,55 @@ class FakeUpstream(socketserver.ThreadingTCPServer):
     daemon_threads = True
 
 
+def _recv_exact(sock: socket.socket, size: int) -> bytes:
+    data = bytearray()
+    while len(data) < size:
+        chunk = sock.recv(size - len(data))
+        if not chunk:
+            raise ConnectionError("unexpected end of SOCKS5 test connection")
+        data.extend(chunk)
+    return bytes(data)
+
+
+class FakeSocksHandler(socketserver.BaseRequestHandler):
+    def handle(self):
+        version, method_count = _recv_exact(self.request, 2)
+        methods = _recv_exact(self.request, method_count)
+        assert version == 5 and methods == b"\x02"
+        self.request.sendall(b"\x05\x02")
+
+        auth_version, username_size = _recv_exact(self.request, 2)
+        username = _recv_exact(self.request, username_size)
+        password_size = _recv_exact(self.request, 1)[0]
+        password = _recv_exact(self.request, password_size)
+        self.server.credentials.append((username, password))  # type: ignore[attr-defined]
+        assert auth_version == 1
+        self.request.sendall(b"\x01\x00")
+
+        version, command, reserved, address_type = _recv_exact(self.request, 4)
+        assert (version, command, reserved) == (5, 1, 0)
+        if address_type == 1:
+            host = socket.inet_ntop(socket.AF_INET, _recv_exact(self.request, 4))
+        elif address_type == 4:
+            host = socket.inet_ntop(socket.AF_INET6, _recv_exact(self.request, 16))
+        else:
+            host_size = _recv_exact(self.request, 1)[0]
+            host = _recv_exact(self.request, host_size).decode("idna")
+        port = int.from_bytes(_recv_exact(self.request, 2), "big")
+        self.server.targets.append((host, port))  # type: ignore[attr-defined]
+        self.request.sendall(b"\x05\x00\x00\x01\x7f\x00\x00\x01\x00\x00")
+
+        if port == 443:
+            if self.request.recv(4) == b"ping":
+                self.request.sendall(b"pong")
+            return
+        request = _read_headers(self.request)
+        self.server.requests.append(request)  # type: ignore[attr-defined]
+        self.request.sendall(
+            b"HTTP/1.1 200 OK\r\nContent-Length: 5\r\nConnection: close\r\n\r\nhello"
+        )
+
+
 def _connect_to_meter(url: str) -> socket.socket:
     parsed = urlparse(url)
     return socket.create_connection((parsed.hostname, parsed.port), timeout=5)
@@ -161,6 +210,85 @@ def test_http_connect_metering_and_private_state():
             os.environ[batch_traffic.BATCH_ID_ENV] = previous_id
 
 
+def test_authenticated_socks5_is_bridged_to_local_http_proxy():
+    previous_file = os.environ.get(batch_traffic.TRAFFIC_FILE_ENV)
+    previous_id = os.environ.get(batch_traffic.BATCH_ID_ENV)
+    upstream = FakeUpstream(("127.0.0.1", 0), FakeSocksHandler)
+    upstream.credentials = []
+    upstream.targets = []
+    upstream.requests = []
+    thread = threading.Thread(target=upstream.serve_forever, daemon=True)
+    thread.start()
+    try:
+        with tempfile.TemporaryDirectory() as temp:
+            path = Path(temp) / "batch_traffic.json"
+            batch_traffic.initialize_batch(path, "batch-socks", target=1, workers=1)
+            os.environ[batch_traffic.TRAFFIC_FILE_ENV] = str(path)
+            os.environ[batch_traffic.BATCH_ID_ENV] = "batch-socks"
+            proxy = (
+                f"socks5h://example-user:example-pass@127.0.0.1:"
+                f"{upstream.server_address[1]}"
+            )
+            meter = batch_traffic.meter_proxy_url(proxy)
+            assert meter.startswith("http://meter:")
+
+            client = _connect_to_meter(meter)
+            client.sendall(
+                b"GET http://example.test/resource?q=1 HTTP/1.1\r\n"
+                b"Host: example.test\r\n"
+                + _meter_auth_header(meter)
+                + b"Connection: close\r\n\r\n"
+            )
+            response = bytearray()
+            while chunk := client.recv(8192):
+                response.extend(chunk)
+            client.close()
+            assert response.endswith(b"hello")
+
+            client = _connect_to_meter(meter)
+            client.sendall(
+                b"CONNECT example.test:443 HTTP/1.1\r\nHost: example.test:443\r\n"
+                + _meter_auth_header(meter)
+                + b"\r\nping"
+            )
+            connect_response = _read_headers(client)
+            assert b" 200 " in connect_response.split(b"\r\n", 1)[0]
+            assert client.recv(4) == b"pong"
+            client.close()
+
+            batch_traffic.close_runtime()
+            metrics = batch_traffic.read_metrics(path)
+            assert metrics["metered_proxies"] == 1
+            assert metrics["unmetered_proxies"] == 0
+            assert metrics["connections"] == 2
+            assert upstream.credentials == [
+                (b"example-user", b"example-pass"),
+                (b"example-user", b"example-pass"),
+            ]
+            assert upstream.targets == [("example.test", 80), ("example.test", 443)]
+            assert upstream.requests[0].startswith(
+                b"GET /resource?q=1 HTTP/1.1\r\n"
+            )
+            assert b"Proxy-Authorization" not in upstream.requests[0]
+            state_text = path.read_text(encoding="utf-8")
+            assert "example-user" not in state_text
+            assert "example-pass" not in state_text
+            assert urlparse(meter).password not in state_text
+    finally:
+        batch_traffic.close_runtime()
+        upstream.shutdown()
+        upstream.server_close()
+        thread.join(timeout=5)
+        if previous_file is None:
+            os.environ.pop(batch_traffic.TRAFFIC_FILE_ENV, None)
+        else:
+            os.environ[batch_traffic.TRAFFIC_FILE_ENV] = previous_file
+        if previous_id is None:
+            os.environ.pop(batch_traffic.BATCH_ID_ENV, None)
+        else:
+            os.environ[batch_traffic.BATCH_ID_ENV] = previous_id
+
+
 def test_batch_history_is_private_idempotent_and_summarized():
     with tempfile.TemporaryDirectory() as temp:
         history_path = Path(temp) / "log" / "batch_traffic_history.json"
@@ -224,5 +352,6 @@ def test_batch_history_is_private_idempotent_and_summarized():
 
 if __name__ == "__main__":
     test_http_connect_metering_and_private_state()
+    test_authenticated_socks5_is_bridged_to_local_http_proxy()
     test_batch_history_is_private_idempotent_and_summarized()
     print("OK batch traffic")
