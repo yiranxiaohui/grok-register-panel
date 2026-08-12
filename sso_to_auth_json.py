@@ -42,7 +42,7 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from curl_cffi import requests
+from curl_cffi import CurlMime, requests
 from secure_files import (
     atomic_write_json,
     atomic_write_text,
@@ -1796,14 +1796,24 @@ def upload_grok2api_auth_remote(
     record = token_to_grok2api_import_record(token, email=email, proxy_url=proxy)
     document = json.dumps(record, ensure_ascii=False).encode("utf-8")
     name = grok2api_auth_filename(record, email=email)
-    imported = requests.post(
-        f"{base}/api/admin/v1/accounts/import",
-        headers={"Authorization": f"Bearer {access_token}"},
-        files={"files": (name, document, "application/json")},
-        timeout=timeout,
-        proxies=direct_proxies,
-        impersonate="chrome",
-    )
+    multipart = CurlMime()
+    try:
+        multipart.addpart(
+            name="files",
+            filename=name,
+            content_type="application/json",
+            data=document,
+        )
+        imported = requests.post(
+            f"{base}/api/admin/v1/accounts/import",
+            headers={"Authorization": f"Bearer {access_token}"},
+            multipart=multipart,
+            timeout=timeout,
+            proxies=direct_proxies,
+            impersonate="chrome",
+        )
+    finally:
+        multipart.close()
     if imported.status_code >= 400:
         raise RuntimeError(f"Grok2API 远程导入失败 HTTP {imported.status_code}")
     body = str(imported.text or "")
