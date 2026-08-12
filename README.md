@@ -22,7 +22,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 | 能力 | 说明 |
 |------|------|
 | 注册全链路 | 邮箱 OTP → 资料页 → Turnstile → SSO → Device / OAuth → 写入 CPA / Grok2API |
-| 多邮箱后端 | Cloudflare Worker 邮、DuckMail、YYDS、MailNest、CloudMail、MoeMail；面板内切换、保存和连通性测试 |
+| 多邮箱后端 | Cloudflare Worker 邮、DuckMail、YYDS、MailNest、CloudMail、MoeMail、AnyMail；面板内切换、保存和连通性测试 |
 | 反检测浏览器 | [Camoufox](https://camoufox.com/)（Gecko 层指纹） |
 | 出口预检 | 启动前解析出口 IP / ASN，命中黑名单直接换口 |
 | 风控早停 | `botFlagSource=1` + `policy=deny` 时跳过后续 OAuth，避免无效重试 |
@@ -55,7 +55,7 @@ Based on [AaronL725/grok-register](https://github.com/AaronL725/grok-register) (
 </details>
 
 <details>
-<summary><strong>邮箱服务：六种 provider 与高级域名轮换</strong></summary>
+<summary><strong>邮箱服务：七种 provider 与高级域名轮换</strong></summary>
 <br>
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="docs/screenshots/email-service-dark.png">
@@ -126,7 +126,7 @@ cp config.example.json config.json
 
 | 字段 | 说明 |
 |------|------|
-| `email_provider` | `cloudflare` / `duckmail` / `yyds` / `mailnest` / `cloudmail` / `moemail` |
+| `email_provider` | `cloudflare` / `duckmail` / `yyds` / `mailnest` / `cloudmail` / `moemail` / `anymail` |
 | `defaultDomains` | 临时邮域名（如二级 CF 域） |
 | `cloudflare_*` / `duckmail_*` 等 | 对应邮箱 API |
 | `cloudflare_randomize_subdomain` | 默认 `true`；为管理域名生成随机子域，要求泛域收信；不支持时设为 `false` |
@@ -134,6 +134,10 @@ cp config.example.json config.json
 | `moemail_api_key` | MoeMail OpenAPI 的 `X-API-Key` |
 | `moemail_domain` | 可选固定域名；留空时自动读取 `/api/config` 的可用域名 |
 | `moemail_expiry_ms` | `3600000` / `86400000` / `604800000` / `0`，分别为 1 小时、1 天、7 天、永久 |
+| `anymail_api_base` | AnyMail 站点根 URL，例如 `https://any-mail.example.com` |
+| `anymail_api_key` | AnyMail 的 Bearer API Key；需绑定 `provider=domain`，并授予 `emails:read`、`accounts:write`，自动读取域名时还需 `domains:read` |
+| `anymail_domain` | 可选固定域名；留空时自动读取 `/api/domains` |
+| `anymail_expiry_ms` | `3600000` / `86400000` / `604800000` / `0`，分别为 1 小时、1 天、7 天、永久 |
 | `proxy` | 默认 HTTP 代理，如 `http://127.0.0.1:7890` |
 | `proxies.txt` | 可选的旧版多行代理文件；未配置面板代理池时继续兼容 |
 | `register_workers` | 并发浏览器数（建议先 2～3） |
@@ -314,7 +318,7 @@ python grok_register_ttk.py
 
 ### 邮箱服务与高级域名轮换
 
-- 顶部“邮箱服务”统一配置 `cloudflare`、`duckmail`、`yyds`、`mailnest`、`cloudmail`、`moemail`
+- 顶部“邮箱服务”统一配置 `cloudflare`、`duckmail`、`yyds`、`mailnest`、`cloudmail`、`moemail`、`anymail`
 - 切换服务商时只显示该服务实际支持的字段；保存后新的注册任务读取 `config.json`
 - 已保存的 API Key、JWT 和密码不会通过接口或页面回显；密钥输入留空会保留原值，必须点“清除”并保存才会删除
 - “测试当前提供商”使用表单中的未保存内容做非破坏性连通性检查，不会改写 `config.json`
@@ -322,12 +326,17 @@ python grok_register_ttk.py
 
 域名轮换位于邮箱服务页的高级设置中：
 
-- 支持导入根域名或已有子域名，并绑定 `cloudflare`、`cloudmail`、`moemail`、`yyds` provider
+- 支持导入根域名或已有子域名，并绑定 `cloudflare`、`cloudmail`、`moemail`、`anymail`、`yyds` provider
 - 每个 provider 可设置最大活跃域名数；超出部分待命，活跃域名停用或拉黑后自动补位
 - xAI 明确拒绝邮箱域名时累计连续失败，达到阈值后自动拉黑；成功提交邮箱后清零连续失败
 - 邮箱 API、验证码超时和普通网络异常不会处罚域名，避免把基础设施故障误判成域名质量问题
 - 通过“启用”“重置”“删除”管理条目；对应 provider 的面板池配置后，域名池耗尽不会回退旧配置
 - `duckmail` 与 `mailnest` 的域名由上游服务分配，不能在面板中伪造自定义域名池
+
+AnyMail 接入时，先在 AnyMail 的“我的域名”声明收信域名，再创建一把绑定
+`Domain` 且包含 `emails:read`、`accounts:write`、`domains:read` scope 的 API Key。
+如果在本面板填写固定域名，可以省略 `domains:read`；临时邮箱在收码结束后会主动删除，
+同时以配置的有效期作为异常退出时的兜底清理。
 
 域名池只保存域名和运行统计，不保存邮箱账号密码或 provider 密钥。
 

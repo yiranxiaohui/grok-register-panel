@@ -18,7 +18,7 @@ No actionable P0, P1, or P2 differences remain.
 - Spacing and layout: the provider selector, dynamic form grid, action row, and advanced domain rotation follow the reference grouping. The implementation intentionally keeps the existing console's `1280px` content rail instead of copying the reference's nearly full-width shell.
 - Colors and tokens: light and dark themes use the existing neutral and red accent tokens with readable success, warning, and error states. No gradients or decorative surfaces were introduced.
 - Image and icon fidelity: the source contains no required product imagery. The implementation uses native form affordances and does not substitute CSS art, custom SVG, emoji, or placeholder assets.
-- Copy and content: the source's unsupported Apple Mail API fields were replaced by the six providers and settings implemented by this repository. “邮箱服务” is the primary task; “域名轮换” is correctly demoted to advanced settings.
+- Copy and content: the source's unsupported Apple Mail API fields were replaced by the seven providers and settings implemented by this repository. “邮箱服务” is the primary task; “域名轮换” is correctly demoted to advanced settings.
 - Responsiveness: `390px` and `320px` captures have no horizontal overflow or overlap. Action buttons remain at least `129px` wide.
 - Accessibility and states: labels are associated with controls; status and messages use live regions; provider selection, save, secret preserve/clear, test success, validation error, theme switching, and advanced expand/collapse were exercised.
 
@@ -30,7 +30,7 @@ The native-resolution desktop capture was sufficient to inspect labels, field bo
 
 1. Initial interaction pass found a functional issue outside the visual comparison: Cloudflare direct-mode connectivity ignored a custom URL port and probed only 80/443.
 2. The probe now uses the parsed URL port, with a regression test for `http://mail.example.com:8793`.
-3. Post-fix browser evidence confirms a successful custom-port test, all six provider schemas, secret preservation and explicit clearing, inline validation, advanced settings, light/dark themes, and both mobile widths. The deliberate invalid-URL test produced one expected HTTP 400 console entry; there were no unexpected page or console errors.
+3. Post-fix browser evidence confirms a successful custom-port test, all seven provider schemas, secret preservation and explicit clearing, inline validation, advanced settings, light/dark themes, and both mobile widths. The deliberate invalid-URL test produced one expected HTTP 400 console entry; there were no unexpected page or console errors.
 
 ## Follow-up Polish
 

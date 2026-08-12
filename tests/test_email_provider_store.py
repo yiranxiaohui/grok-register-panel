@@ -54,6 +54,7 @@ def test_provider_schema_and_defaults():
             "mailnest",
             "cloudmail",
             "moemail",
+            "anymail",
         }
         assert providers["duckmail"]["configured"] is True
         assert providers["cloudmail"]["configured"] is False
@@ -70,6 +71,10 @@ def test_provider_schema_and_defaults():
         assert any(
             field["name"] == "cloudmail_password" and field["secret"] is True
             for field in providers["cloudmail"]["fields"]
+        )
+        assert any(
+            field["name"] == "anymail_api_key" and field["secret"] is True
+            for field in providers["anymail"]["fields"]
         )
 
 
@@ -172,6 +177,42 @@ def test_connectivity_uses_unsaved_form_and_preserves_saved_secret():
         assert config_path.read_text(encoding="utf-8") == before
 
 
+def test_anymail_secret_masking_preservation_and_clear():
+    with IsolatedConfig() as config_path:
+        saved = email_provider_store.save_email_provider_config(
+            "anymail",
+            {
+                "anymail_api_base": "https://any-mail.example.com/",
+                "anymail_api_key": "ak_example_not_real",
+                "anymail_domain": "Mail.Example.com",
+                "anymail_expiry_ms": 3600000,
+            },
+        )
+        assert saved["provider"] == "anymail"
+        assert saved["configured"] is True
+        assert saved["values"]["anymail_api_key"] == ""
+        assert saved["secret_configured"]["anymail_api_key"] is True
+        raw = json.loads(config_path.read_text(encoding="utf-8"))
+        assert raw["anymail_api_base"] == "https://any-mail.example.com"
+        assert raw["anymail_api_key"] == "ak_example_not_real"
+        assert raw["anymail_domain"] == "mail.example.com"
+
+        email_provider_store.save_email_provider_config(
+            "anymail",
+            {"anymail_api_key": "", "anymail_domain": "fixed.example.com"},
+        )
+        preserved = json.loads(config_path.read_text(encoding="utf-8"))
+        assert preserved["anymail_api_key"] == "ak_example_not_real"
+
+        cleared = email_provider_store.save_email_provider_config(
+            "anymail",
+            {},
+            clear_secrets=["anymail_api_key"],
+        )
+        assert cleared["secret_configured"]["anymail_api_key"] is False
+        assert cleared["configured"] is False
+
+
 def test_cloudflare_connectivity_uses_configured_port():
     import connectivity
 
@@ -255,6 +296,7 @@ if __name__ == "__main__":
     test_secret_masking_preservation_clear_and_private_file()
     test_validation_rejects_unknown_fields_and_unsafe_values()
     test_connectivity_uses_unsaved_form_and_preserves_saved_secret()
+    test_anymail_secret_masking_preservation_and_clear()
     test_cloudflare_connectivity_uses_configured_port()
     test_cloudflare_direct_create_does_not_probe_admin_domains()
     test_cloudflare_admin_create_does_not_probe_mailbox_domains()

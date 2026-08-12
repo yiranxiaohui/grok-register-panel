@@ -26,6 +26,7 @@ PROVIDER_LABELS = {
     "mailnest": "MailNest",
     "cloudmail": "CloudMail",
     "moemail": "MoeMail",
+    "anymail": "AnyMail",
 }
 SUPPORTED_PROVIDERS = tuple(PROVIDER_LABELS)
 
@@ -164,6 +165,33 @@ FIELD_DEFINITIONS = {
             {"value": 0, "label": "永久"},
         ],
     },
+    "anymail_api_base": {
+        "label": "站点 URL",
+        "type": "url",
+        "placeholder": "https://any-mail.example.com",
+    },
+    "anymail_api_key": {
+        "label": "API Key",
+        "type": "password",
+        "secret": True,
+        "placeholder": "ak_...",
+    },
+    "anymail_domain": {
+        "label": "固定收信域名",
+        "type": "domain",
+        "placeholder": "留空自动读取 /api/domains",
+    },
+    "anymail_expiry_ms": {
+        "label": "邮箱有效期",
+        "type": "select",
+        "default": 3600000,
+        "options": [
+            {"value": 3600000, "label": "1 小时"},
+            {"value": 86400000, "label": "1 天"},
+            {"value": 604800000, "label": "7 天"},
+            {"value": 0, "label": "永久"},
+        ],
+    },
 }
 
 PROVIDER_FIELDS = {
@@ -193,6 +221,12 @@ PROVIDER_FIELDS = {
         "moemail_api_key",
         "moemail_domain",
         "moemail_expiry_ms",
+    ),
+    "anymail": (
+        "anymail_api_base",
+        "anymail_api_key",
+        "anymail_domain",
+        "anymail_expiry_ms",
     ),
 }
 
@@ -355,6 +389,8 @@ def _is_configured(provider: str, values: dict) -> bool:
         )
     if provider == "moemail":
         return bool(values.get("moemail_api_base") and values.get("moemail_api_key"))
+    if provider == "anymail":
+        return bool(values.get("anymail_api_base") and values.get("anymail_api_key"))
     return False
 
 

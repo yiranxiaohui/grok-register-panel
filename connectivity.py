@@ -246,6 +246,63 @@ def check_email_api(provider: str, config: dict, http_get: Callable, http_post: 
                 detail += f"；域名 {domains[:80]}"
             return "邮箱API", True, detail
 
+        if provider == "anymail":
+            from email_providers import anymail as anymail_provider
+
+            base = anymail_provider.normalize_base(
+                str(config.get("anymail_api_base") or "")
+            )
+            key = str(config.get("anymail_api_key") or "").strip()
+            if not base:
+                return "邮箱API", False, "未配置 anymail_api_base"
+            if not key:
+                return "邮箱API", False, "未配置 anymail_api_key"
+            fixed_domain = str(config.get("anymail_domain") or "").strip().lstrip("@")
+            if fixed_domain:
+                probe_url = f"{base}/api/emails/latest"
+                probe_params = {"to": f"probe@{fixed_domain}", "limit": 1}
+            else:
+                probe_url = f"{base}/api/domains"
+                probe_params = None
+            resp = http_get(
+                probe_url,
+                headers={
+                    "Accept": "application/json",
+                    "Authorization": f"Bearer {key}",
+                },
+                params=probe_params,
+                timeout=12,
+                proxies={},
+            )
+            if resp.status_code in (401, 403):
+                return (
+                    "邮箱API",
+                    False,
+                    f"AnyMail API Key 或 scope 无效 HTTP {resp.status_code}",
+                )
+            if resp.status_code >= 400:
+                return "邮箱API", False, f"AnyMail HTTP {resp.status_code}"
+            data = resp.json()
+            if fixed_domain:
+                return (
+                    "邮箱API",
+                    True,
+                    f"AnyMail 可达 HTTP {resp.status_code}；固定域名 {fixed_domain}",
+                )
+            rows = data.get("domains") if isinstance(data, dict) else []
+            names = []
+            for row in rows if isinstance(rows, list) else []:
+                if isinstance(row, dict):
+                    name = str(row.get("name") or row.get("domain_name") or "").strip()
+                    if name:
+                        names.append(name)
+            detail = f"AnyMail 可达 HTTP {resp.status_code}"
+            if names:
+                detail += f"；域名 {', '.join(names)[:80]}"
+            else:
+                return "邮箱API", False, detail + "；未发现可用域名"
+            return "邮箱API", True, detail
+
         return "邮箱API", True, f"提供商 {provider} 跳过深度探测"
     except Exception as exc:
         return "邮箱API", False, redact_log_line(str(exc))

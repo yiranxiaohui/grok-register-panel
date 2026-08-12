@@ -186,6 +186,8 @@ def test_email_service_and_domain_rotation_panel_structure():
     assert 'function saveEmailProviderConfig(' in mon
     assert 'function testEmailProviderConnection(' in mon
     assert 'function toggleEmailProviderSecret(' in mon
+    assert '["cloudflare", "cloudmail", "moemail", "anymail", "yyds"]' in mon
+    assert '<option value="anymail">AnyMail</option>' in mon
     assert '/api/email-provider' in mon
     assert '/api/email-provider/test' in mon
     assert '/api/grok2api' in mon

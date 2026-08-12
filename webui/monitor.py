@@ -2010,7 +2010,7 @@ HTML = r"""<!DOCTYPE html>
             <summary>邮箱 API 返回 401 或请求超时</summary>
             <div class="faq-answer">401 先检查对应邮箱服务的 key 和 <code>auth_mode</code>。访问 workers.dev 超时时，在配置中显式填写代理，不要只依赖桌面进程可能无法继承的 HTTP_PROXY 环境变量。</div>
           </details>
-          <details class="faq-item" data-faq-item data-search="邮箱服务 provider cloudflare duckmail yyds mailnest cloudmail moemail api 测试 域名轮换">
+          <details class="faq-item" data-faq-item data-search="邮箱服务 provider cloudflare duckmail yyds mailnest cloudmail moemail anymail api 测试 域名轮换">
             <summary>如何配置邮箱服务</summary>
             <div class="faq-answer">打开顶部“邮箱服务”，选择当前使用的服务商后填写对应 API 配置，保存并测试连通性。自有域名轮换位于同页高级设置；只有 xAI 明确拒绝域名才累计，邮箱 API 和验证码异常不会处罚域名。</div>
           </details>
@@ -2155,6 +2155,7 @@ HTML = r"""<!DOCTYPE html>
                     <option value="cloudflare">Cloudflare</option>
                     <option value="cloudmail">CloudMail</option>
                     <option value="moemail">MoeMail</option>
+                    <option value="anymail">AnyMail</option>
                     <option value="yyds">YYDS</option>
                   </select>
                 </div>
@@ -2773,7 +2774,7 @@ function renderEmailProviderFields(provider) {
     `<div class="field"><label for="mail-field-${esc(field.name)}">${esc(field.label)}</label>${emailProviderFieldControl(field)}</div>`
   ).join("") || '<div class="field"><label>服务配置</label><input disabled value="该服务商没有可编辑字段"/></div>';
   const domainProvider = document.getElementById("domain-provider");
-  if (domainProvider && ["cloudflare", "cloudmail", "moemail", "yyds"].includes(definition.id)) {
+  if (domainProvider && ["cloudflare", "cloudmail", "moemail", "anymail", "yyds"].includes(definition.id)) {
     domainProvider.value = definition.id;
     if (domainData) renderEmailDomainPool(domainData);
   }
@@ -2829,7 +2830,9 @@ function collectEmailProviderSettings() {
   (definition && definition.fields || []).forEach(field => {
     const input = document.getElementById("mail-field-" + field.name);
     if (!input) return;
-    settings[field.name] = field.name === "moemail_expiry_ms" ? Number(input.value) : input.value;
+    settings[field.name] = ["moemail_expiry_ms", "anymail_expiry_ms"].includes(field.name)
+      ? Number(input.value)
+      : input.value;
   });
   return settings;
 }

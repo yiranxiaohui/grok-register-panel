@@ -25,6 +25,8 @@ def test_managed_domains_reach_all_supported_provider_adapters():
             "cloudmail_password",
             "moemail_api_base",
             "moemail_api_key",
+            "anymail_api_base",
+            "anymail_api_key",
             "yyds_api_key",
             "yyds_jwt",
         )
@@ -33,6 +35,7 @@ def test_managed_domains_reach_all_supported_provider_adapters():
         register.cloudflare_provider.create_temp_address,
         register.cloudmail_provider.create_mailbox,
         register.moemail_provider.create_mailbox,
+        register.anymail_provider.create_mailbox,
         register.yyds_create_account,
     )
     observed = {}
@@ -49,6 +52,8 @@ def test_managed_domains_reach_all_supported_provider_adapters():
                 "cloudmail_password": "not-used-in-test",
                 "moemail_api_base": "https://moemail.example.com",
                 "moemail_api_key": "not-used-in-test",
+                "anymail_api_base": "https://anymail.example.com",
+                "anymail_api_key": "not-used-in-test",
                 "yyds_api_key": "not-used-in-test",
                 "yyds_jwt": "",
             }
@@ -67,6 +72,10 @@ def test_managed_domains_reach_all_supported_provider_adapters():
             observed["moemail"] = kwargs["domain"]
             return f"user@{kwargs['domain']}", "moemail-token"
 
+        def fake_anymail(*_args, **kwargs):
+            observed["anymail"] = kwargs["domain"]
+            return f"user@{kwargs['domain']}", "anymail-token"
+
         def fake_yyds(*, local_part=None, domain=None, api_key=None, jwt=None):
             observed["yyds"] = domain
             return {"address": f"{local_part}@{domain}", "token": "yyds-token"}
@@ -74,11 +83,13 @@ def test_managed_domains_reach_all_supported_provider_adapters():
         register.cloudflare_provider.create_temp_address = fake_cloudflare
         register.cloudmail_provider.create_mailbox = fake_cloudmail
         register.moemail_provider.create_mailbox = fake_moemail
+        register.anymail_provider.create_mailbox = fake_anymail
         register.yyds_create_account = fake_yyds
         domains = {
             "cloudflare": "cf-mail.example.com",
             "cloudmail": "cloudmail.example.com",
             "moemail": "moe-mail.example.com",
+            "anymail": "any-mail.example.com",
             "yyds": "yyds-mail.example.com",
         }
         try:
@@ -94,6 +105,7 @@ def test_managed_domains_reach_all_supported_provider_adapters():
                 register.cloudflare_provider.create_temp_address,
                 register.cloudmail_provider.create_mailbox,
                 register.moemail_provider.create_mailbox,
+                register.anymail_provider.create_mailbox,
                 register.yyds_create_account,
             ) = previous_functions
             email_domain_store.STATE_PATH, email_domain_store.LOCK_PATH = previous_paths
@@ -210,6 +222,7 @@ def test_mail_direct_uses_configured_provider_bases():
         "cloudflare_api_base",
         "cloudmail_url",
         "moemail_api_base",
+        "anymail_api_base",
         "duckmail_api_base",
     )
     previous = {key: register.config.get(key) for key in keys}
@@ -218,6 +231,7 @@ def test_mail_direct_uses_configured_provider_bases():
             "cloudflare_api_base": "https://cf-mail.example.test",
             "cloudmail_url": "https://cloudmail.example.test",
             "moemail_api_base": "",
+            "anymail_api_base": "https://anymail.example.test",
             "duckmail_api_base": "",
         }
     )
@@ -227,6 +241,9 @@ def test_mail_direct_uses_configured_provider_bases():
         )
         assert register._url_needs_direct(
             "https://cloudmail.example.test/api/messages"
+        )
+        assert register._url_needs_direct(
+            "https://anymail.example.test/api/accounts"
         )
         assert not register._url_needs_direct(
             "https://unrelated.example.test/v1/status"

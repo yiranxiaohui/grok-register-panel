@@ -32,6 +32,7 @@ import requests as _std_requests
 
 # SSO → CLIProxyAPI(CPA) 扁平格式转换（复用 sso_to_auth_json 的授权码流程 + 写入器）
 import sso_to_auth_json as _s2cpa
+from email_providers import anymail as anymail_provider
 from email_providers import cloudflare as cloudflare_provider
 from email_providers import cloudmail as cloudmail_provider
 from email_providers import duckmail as duckmail_provider
@@ -235,6 +236,11 @@ DEFAULT_CONFIG = {
     "moemail_api_key": "",
     "moemail_domain": "",
     "moemail_expiry_ms": moemail_provider.DEFAULT_EXPIRY_MS,
+    # AnyMail：Bearer API Key；Key 需绑定 domain provider，并具备收信/建箱权限
+    "anymail_api_base": "",
+    "anymail_api_key": "",
+    "anymail_domain": "",
+    "anymail_expiry_ms": anymail_provider.DEFAULT_EXPIRY_MS,
     # 账号间注册间隔（秒），0=不等待。填一个整数=N秒固定等待，填区间"60-120"=随机等待
     "account_interval": "60-120",
 }
@@ -704,6 +710,7 @@ def _url_needs_direct(url: str) -> bool:
         config.get("cloudflare_api_base"),
         config.get("cloudmail_url"),
         config.get("moemail_api_base"),
+        config.get("anymail_api_base"),
         config.get("duckmail_api_base"),
     )
     for value in configured_bases:
@@ -1639,6 +1646,78 @@ def moemail_get_oai_code(
     )
 
 
+def get_anymail_api_base():
+    raw = (
+        os.environ.get("ANYMAIL_API_BASE")
+        or config.get("anymail_api_base")
+        or ""
+    )
+    return anymail_provider.normalize_base(str(raw))
+
+
+def get_anymail_api_key():
+    return str(
+        os.environ.get("ANYMAIL_API_KEY")
+        or config.get("anymail_api_key", "")
+        or ""
+    ).strip()
+
+
+def get_anymail_domain():
+    return str(
+        os.environ.get("ANYMAIL_DOMAIN")
+        or config.get("anymail_domain", "")
+        or ""
+    ).strip().lstrip("@")
+
+
+def get_anymail_expiry_ms():
+    raw = config.get("anymail_expiry_ms", anymail_provider.DEFAULT_EXPIRY_MS)
+    try:
+        value = int(raw)
+    except (TypeError, ValueError):
+        return anymail_provider.DEFAULT_EXPIRY_MS
+    allowed = {0, 3_600_000, 86_400_000, 604_800_000}
+    return value if value in allowed else anymail_provider.DEFAULT_EXPIRY_MS
+
+
+def anymail_get_email_and_token(domain=""):
+    return anymail_provider.create_mailbox(
+        http_get,
+        http_post,
+        get_anymail_api_base(),
+        get_anymail_api_key(),
+        domain=str(domain or "").strip() or get_anymail_domain(),
+        expiry_ms=get_anymail_expiry_ms(),
+    )
+
+
+def anymail_get_oai_code(
+    account_id,
+    email,
+    timeout=180,
+    poll_interval=3,
+    log_callback=None,
+    cancel_callback=None,
+    resend_callback=None,
+):
+    return anymail_provider.wait_for_code(
+        http_get,
+        get_anymail_api_base(),
+        get_anymail_api_key(),
+        account_id,
+        email,
+        timeout=timeout,
+        poll_interval=poll_interval,
+        http_delete=http_delete,
+        raise_if_cancelled=raise_if_cancelled,
+        sleep_with_cancel=sleep_with_cancel,
+        log_callback=log_callback,
+        cancel_callback=cancel_callback,
+        resend_callback=resend_callback,
+    )
+
+
 def cloudmail_get_oai_code(
     dev_token,
     email,
@@ -1731,6 +1810,8 @@ def get_email_and_token(api_key=None):
         return cloudmail_get_email_and_token(domain=managed_domain)
     if provider == "moemail":
         return moemail_get_email_and_token(domain=managed_domain)
+    if provider == "anymail":
+        return anymail_get_email_and_token(domain=managed_domain)
     if provider == "cloudflare":
         api_base = get_cloudflare_api_base()
         if not api_base:
@@ -1803,6 +1884,16 @@ def get_oai_code(
         )
     if provider == "moemail":
         return moemail_get_oai_code(
+            dev_token,
+            email,
+            timeout=timeout,
+            poll_interval=poll_interval,
+            log_callback=log_callback,
+            cancel_callback=cancel_callback,
+            resend_callback=resend_callback,
+        )
+    if provider == "anymail":
+        return anymail_get_oai_code(
             dev_token,
             email,
             timeout=timeout,
@@ -2532,7 +2623,15 @@ class GrokRegisterGUI:
         self.email_provider_combo = tk_option_menu(
             config_frame,
             self.email_provider_var,
-            ["duckmail", "yyds", "cloudflare", "mailnest", "cloudmail", "moemail"],
+            [
+                "duckmail",
+                "yyds",
+                "cloudflare",
+                "mailnest",
+                "cloudmail",
+                "moemail",
+                "anymail",
+            ],
             width=12,
         )
         add_field(self.email_provider_combo, 0, 1, sticky=tk.W)
@@ -2790,6 +2889,62 @@ class GrokRegisterGUI:
             ),
         ]
 
+        # AnyMail
+        self.anymail_api_base_var = tk.StringVar(
+            value=str(config.get("anymail_api_base", "") or "")
+        )
+        self.anymail_api_key_var = tk.StringVar(
+            value=str(config.get("anymail_api_key", "") or "")
+        )
+        self.anymail_domain_var = tk.StringVar(
+            value=str(config.get("anymail_domain", "") or "")
+        )
+        self.anymail_expiry_ms_var = tk.StringVar(
+            value=str(
+                config.get("anymail_expiry_ms", anymail_provider.DEFAULT_EXPIRY_MS)
+            )
+        )
+        self._anymail_widgets = [
+            p_label(0, 0, "站点 URL:"),
+            p_field(
+                tk_entry(self.provider_frame, textvariable=self.anymail_api_base_var, width=52),
+                0,
+                1,
+                columnspan=3,
+            ),
+            p_label(1, 0, "API Key:"),
+            p_field(
+                tk_entry(self.provider_frame, textvariable=self.anymail_api_key_var, width=34, show="*"),
+                1,
+                1,
+            ),
+            p_label(1, 2, "固定域名（可选）:"),
+            p_field(tk_entry(self.provider_frame, textvariable=self.anymail_domain_var, width=34), 1, 3),
+            p_label(2, 0, "有效期:"),
+            p_field(
+                tk_option_menu(
+                    self.provider_frame,
+                    self.anymail_expiry_ms_var,
+                    ["3600000", "86400000", "604800000", "0"],
+                    width=12,
+                ),
+                2,
+                1,
+                sticky=tk.W,
+            ),
+            p_label(2, 2, "说明:"),
+            p_field(
+                tk_label(
+                    self.provider_frame,
+                    text="Key 需绑定 Domain；域名留空时读取 /api/domains",
+                    bg=UI_PANEL_BG,
+                ),
+                2,
+                3,
+                sticky=tk.W,
+            ),
+        ]
+
         self._provider_widget_groups = {
             "duckmail": self._duckmail_widgets,
             "cloudflare": self._cloudflare_widgets,
@@ -2797,6 +2952,7 @@ class GrokRegisterGUI:
             "mailnest": self._mailnest_widgets,
             "cloudmail": self._cloudmail_widgets,
             "moemail": self._moemail_widgets,
+            "anymail": self._anymail_widgets,
         }
 
         add_label(3, 0, "并发数（可选）:")
@@ -2982,6 +3138,7 @@ class GrokRegisterGUI:
             "mailnest": "MailNest 配置",
             "cloudmail": "CloudMail 配置",
             "moemail": "MoeMail 配置",
+            "anymail": "AnyMail 配置",
         }
         self.provider_frame.configure(text=titles.get(provider, "邮箱服务商配置"))
         for widgets in self._provider_widget_groups.values():
@@ -3076,6 +3233,13 @@ class GrokRegisterGUI:
             config["moemail_expiry_ms"] = int(
                 self.moemail_expiry_ms_var.get().strip()
                 or moemail_provider.DEFAULT_EXPIRY_MS
+            )
+            config["anymail_api_base"] = self.anymail_api_base_var.get().strip()
+            config["anymail_api_key"] = self.anymail_api_key_var.get().strip()
+            config["anymail_domain"] = self.anymail_domain_var.get().strip().lstrip("@")
+            config["anymail_expiry_ms"] = int(
+                self.anymail_expiry_ms_var.get().strip()
+                or anymail_provider.DEFAULT_EXPIRY_MS
             )
             config["cpa_auto_add"] = bool(self.cpa_auto_add_var.get())
             config["grok2api_remote_url"] = self.grok2api_remote_url_var.get().strip()
@@ -3196,6 +3360,16 @@ class GrokRegisterGUI:
             )
         except ValueError:
             config["moemail_expiry_ms"] = moemail_provider.DEFAULT_EXPIRY_MS
+        config["anymail_api_base"] = self.anymail_api_base_var.get().strip()
+        config["anymail_api_key"] = self.anymail_api_key_var.get().strip()
+        config["anymail_domain"] = self.anymail_domain_var.get().strip().lstrip("@")
+        try:
+            config["anymail_expiry_ms"] = int(
+                self.anymail_expiry_ms_var.get().strip()
+                or anymail_provider.DEFAULT_EXPIRY_MS
+            )
+        except ValueError:
+            config["anymail_expiry_ms"] = anymail_provider.DEFAULT_EXPIRY_MS
         config["cpa_auto_add"] = bool(self.cpa_auto_add_var.get())
         _mode_text = str(self.cpa_token_mode_var.get()).strip()
         if "协议" in _mode_text:
@@ -3235,6 +3409,15 @@ class GrokRegisterGUI:
                 missing.append("MoeMail API Key")
             if missing:
                 self.log(f"[!] MoeMail 模式缺少配置: {', '.join(missing)}")
+                return
+        if config["email_provider"] == "anymail":
+            missing = []
+            if not get_anymail_api_base():
+                missing.append("AnyMail 站点 URL")
+            if not get_anymail_api_key():
+                missing.append("AnyMail API Key")
+            if missing:
+                self.log(f"[!] AnyMail 模式缺少配置: {', '.join(missing)}")
                 return
         if config["email_provider"] == "cloudmail":
             missing = []
