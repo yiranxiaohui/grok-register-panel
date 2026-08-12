@@ -83,6 +83,7 @@ def test_cpa_only_batch_does_not_create_auth_out():
         cpa_auth_dir="/tmp/cpa",
         cpa_remote_url=None,
         grok2api_auth_dir=None,
+        grok2api_remote_url=None,
         merge=False,
     )
     assert should_create_default_out_dir(args, 2) is False
@@ -119,6 +120,9 @@ def test_bfs_config_defaults_are_loaded_for_cli():
             grok2api_auth_dir=None,
             cpa_remote_url=None,
             cpa_management_key=None,
+            grok2api_remote_url=None,
+            grok2api_admin_username=None,
+            grok2api_admin_password=None,
             proxy="",
             prefer=None,
             bfs_check=None,

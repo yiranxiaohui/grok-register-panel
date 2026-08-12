@@ -48,7 +48,7 @@ chmod 600 config.json
 - `cpa_auto_add`
 - `cpa_auth_dir`
 - `grok2api_auth_dir`
-- 可选的 `grok2api_remote_url`、`grok2api_admin_username` 与 `grok2api_admin_password`；面板登录远程 Grok2API 后调用现有账号导入 API
+- 可选的 `grok2api_remote_url`、`grok2api_admin_username` 与 `grok2api_admin_password`；面板登录远程 Grok2API 后调用现有账号导入 API，并以 `proxy_url` 携带该账号注册全链路固定使用的代理
 - 可选的 `cpa_remote_url` 与 `cpa_management_key`
 
 也可以在面板顶部打开“邮箱服务”，选择实际 provider 后填写、保存并测试连接。

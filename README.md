@@ -144,7 +144,7 @@ cp config.example.json config.json
 | `grok2api_remote_url` / `grok2api_admin_username` / `grok2api_admin_password` | 远程 Grok2API Admin API（可选） |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 
-Web 控制台的“远程 Grok2API”卡片可保存以上配置并测试管理员登录。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。
+Web 控制台的“远程 Grok2API”卡片可保存以上配置并测试管理员登录。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。注册账号远程导入 Grok2API 时会携带该账号本次注册、SSO 与 OAuth 全链路固定使用的代理，并由支持 `proxy_url` 导入的 Grok2API 建立严格账号出口绑定；直连账号不写该字段。
 
 Docker 镜像由 GitHub Actions 自动发布到 `ghcr.io/yiranxiaohui/grok-register-panel`；部署和持久化目录示例见 [DEPLOYMENT.md](DEPLOYMENT.md#docker--ghcr)。
 

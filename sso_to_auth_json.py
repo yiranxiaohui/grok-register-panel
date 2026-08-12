@@ -1718,6 +1718,39 @@ def write_grok2api_auth(auth_dir: Path, token: dict, email: str = "") -> Path:
     return path
 
 
+def token_to_grok2api_import_record(
+    token: dict,
+    email: str = "",
+    proxy_url: str = "",
+) -> dict:
+    """Build one flat Grok2API account-import record.
+
+    Grok2API's Admin import API uses a different shape from the nested
+    ``~/.grok/auth.json`` document written by :func:`write_grok2api_auth`.
+    ``proxy_url`` is write-only import metadata on Grok2API and establishes a
+    strict per-account egress binding.
+    """
+    _key, entry = token_to_auth_entry(token, email=email)
+    record = {
+        "provider": "grok_build",
+        "name": entry.get("email") or entry.get("user_id") or "Grok Build account",
+        "client_id": entry.get("oidc_client_id") or CLIENT_ID,
+        "access_token": entry.get("key") or "",
+        "refresh_token": entry.get("refresh_token") or "",
+        "id_token": token.get("id_token") or "",
+        "token_type": token.get("token_type") or "Bearer",
+        "scope": token.get("scope") or "",
+        "expires_at": entry.get("expires_at") or "",
+        "email": entry.get("email") or "",
+        "user_id": entry.get("user_id") or "",
+        "principal_id": entry.get("principal_id") or "",
+    }
+    account_proxy = str(proxy_url or "").strip()
+    if account_proxy:
+        record["proxy_url"] = account_proxy
+    return record
+
+
 def upload_grok2api_auth_remote(
     base_url: str,
     username: str,
@@ -1727,7 +1760,11 @@ def upload_grok2api_auth_remote(
     timeout: int = 30,
     proxy: str = "",
 ) -> str:
-    """Login to Grok2API and import one Build credential via its Admin API."""
+    """Login and import one Build credential with its fixed account proxy.
+
+    ``proxy`` remains the transport proxy for the OAuth/Admin requests and is
+    also written as Grok2API's per-account ``proxy_url`` import metadata.
+    """
     base = str(base_url or "").strip().rstrip("/")
     user = str(username or "").strip()
     secret = str(password or "")
@@ -1753,9 +1790,9 @@ def upload_grok2api_auth_remote(
     if not access_token:
         raise RuntimeError("Grok2API 登录响应缺少 accessToken")
 
-    key, entry = token_to_auth_entry(token, email=email)
-    document = json.dumps({key: entry}, ensure_ascii=False).encode("utf-8")
-    name = grok2api_auth_filename(entry, email=email)
+    record = token_to_grok2api_import_record(token, email=email, proxy_url=proxy)
+    document = json.dumps(record, ensure_ascii=False).encode("utf-8")
+    name = grok2api_auth_filename(record, email=email)
     imported = requests.post(
         f"{base}/api/admin/v1/accounts/import",
         headers={"Authorization": f"Bearer {access_token}"},
@@ -2111,7 +2148,11 @@ def main() -> int:
         action="store_true",
         help="禁用换 token 回退（仅用 --prefer 指定路径）",
     )
-    ap.add_argument("--proxy", default="", help="OAuth 请求走代理，如 http://127.0.0.1:7890")
+    ap.add_argument(
+        "--proxy",
+        default="",
+        help="OAuth/远程上传走该代理；导入 Grok2API 时也绑定为账号 proxy_url",
+    )
     ap.add_argument("--consume-success", action="store_true", help="成功后从 --sso 队列原子移除对应记录")
     ap.add_argument("--report-json", default=None, help="写入不含 token 的运行摘要 JSON")
     ap.add_argument(
