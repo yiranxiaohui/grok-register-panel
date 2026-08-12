@@ -141,6 +141,7 @@ cp config.example.json config.json
 | `cpa_auto_add` | 是否 SSO→OAuth 并写入 auth |
 | `cpa_auth_dir` | 本地 CPA 目录（`xai-*.json`） |
 | `grok2api_auth_dir` | Grok2API 风格 auth 目录 |
+| `grok2api_remote_url` / `grok2api_admin_username` / `grok2api_admin_password` | 远程 Grok2API Admin API（可选） |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 
 ### 环境变量

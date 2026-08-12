@@ -220,6 +220,10 @@ DEFAULT_CONFIG = {
     # 远程 CPA：通过 Management API POST /v0/management/auth-files 上传
     "cpa_remote_url": "",
     "cpa_management_key": "",
+    # 远程 Grok2API：使用现有 Admin API 登录并导入账号
+    "grok2api_remote_url": "",
+    "grok2api_admin_username": "",
+    "grok2api_admin_password": "",
     # Grok2API / ~/.grok 风格 auth 目录（默认项目根目录下 grok2api_auth/）
     "grok2api_auth_dir": "grok2api_auth",
     "mailnest_api_key": "",
@@ -1016,6 +1020,9 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
     auth_dir = str(config.get("cpa_auth_dir", "") or "").strip()
     remote_url = str(config.get("cpa_remote_url", "") or "").strip()
     management_key = str(config.get("cpa_management_key", "") or "").strip()
+    g2a_remote_url = str(config.get("grok2api_remote_url", "") or "").strip()
+    g2a_username = str(config.get("grok2api_admin_username", "") or "").strip()
+    g2a_password = str(config.get("grok2api_admin_password", "") or "")
     g2a_dir = str(config.get("grok2api_auth_dir", "") or "").strip()
 
     # 相对路径基于项目根目录解析，并自动创建目录
@@ -1024,17 +1031,21 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
     if g2a_dir and not os.path.isabs(g2a_dir):
         g2a_dir = os.path.join(APP_DIR, g2a_dir)
 
-    if not auth_dir and not remote_url and not g2a_dir:
+    if not auth_dir and not remote_url and not g2a_dir and not g2a_remote_url:
         if log_callback:
             log_callback(
-                "[Debug] 已开启 SSO→auth 但未配置 cpa_auth_dir / cpa_remote_url / grok2api_auth_dir，跳过"
+                "[Debug] 已开启 SSO→auth 但未配置 CPA / Grok2API 写入目标，跳过"
             )
         return True
     if remote_url and not management_key:
         if log_callback:
             log_callback("[Debug] 已配置 cpa_remote_url 但未配置 cpa_management_key，跳过远程上传")
         remote_url = ""
-    if not auth_dir and not remote_url and not g2a_dir:
+    if g2a_remote_url and (not g2a_username or not g2a_password):
+        if log_callback:
+            log_callback("[Debug] 已配置 Grok2API 远程地址但缺少管理员账号或密码，跳过远程上传")
+        g2a_remote_url = ""
+    if not auth_dir and not remote_url and not g2a_dir and not g2a_remote_url:
         return True
     sso = _normalize_sso_token(raw_token)
     if not sso:
@@ -1178,6 +1189,15 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
                 wrote_ok = True
             except Exception as g2a_exc:
                 _cpa_log(f"Grok2API 写入失败: {g2a_exc}")
+        if g2a_remote_url:
+            try:
+                name = _s2cpa.upload_grok2api_auth_remote(
+                    g2a_remote_url, g2a_username, g2a_password, token, email=email, proxy=proxy
+                )
+                _cpa_log(f"已上传 Grok2API 远程 {g2a_remote_url.rstrip('/')}/.../{name}")
+                wrote_ok = True
+            except Exception as g2a_remote_exc:
+                _cpa_log(f"Grok2API 远程上传失败: {g2a_remote_exc}")
         if not wrote_ok:
             _cpa_log("token 已换出但 CPA/Grok2API 均未写入成功")
             _append_sso_pending(email, sso, log_callback=log_callback)
@@ -2863,6 +2883,9 @@ class GrokRegisterGUI:
         self.cpa_remote_url_var = tk.StringVar(value=str(config.get("cpa_remote_url", "")))
         self.cpa_management_key_var = tk.StringVar(value=str(config.get("cpa_management_key", "")))
         self.grok2api_auth_dir_var = tk.StringVar(value=str(config.get("grok2api_auth_dir", "")))
+        self.grok2api_remote_url_var = tk.StringVar(value=str(config.get("grok2api_remote_url", "")))
+        self.grok2api_admin_username_var = tk.StringVar(value=str(config.get("grok2api_admin_username", "")))
+        self.grok2api_admin_password_var = tk.StringVar(value=str(config.get("grok2api_admin_password", "")))
         c_label(2, 0, "CPA auth 目录:")
         c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_auth_dir_var, width=52), 2, 1, columnspan=3)
         c_label(3, 0, "远程地址:")
@@ -2871,6 +2894,12 @@ class GrokRegisterGUI:
         c_field(tk_entry(self.cpa_frame, textvariable=self.cpa_management_key_var, width=28), 3, 3)
         c_label(4, 0, "Grok2API 目录:")
         c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_auth_dir_var, width=52), 4, 1, columnspan=3)
+        c_label(5, 0, "Grok2API 远程:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_remote_url_var, width=52), 5, 1, columnspan=3)
+        c_label(6, 0, "管理员账号:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_admin_username_var, width=34), 6, 1)
+        c_label(6, 2, "管理员密码:")
+        c_field(tk_entry(self.cpa_frame, textvariable=self.grok2api_admin_password_var, width=28, show="*"), 6, 3)
 
         self.email_provider_var.trace_add("write", lambda *_: self._refresh_provider_fields())
         self.cpa_auto_add_var.trace_add("write", lambda *_: self._refresh_cpa_fields())
@@ -3049,6 +3078,9 @@ class GrokRegisterGUI:
                 or moemail_provider.DEFAULT_EXPIRY_MS
             )
             config["cpa_auto_add"] = bool(self.cpa_auto_add_var.get())
+            config["grok2api_remote_url"] = self.grok2api_remote_url_var.get().strip()
+            config["grok2api_admin_username"] = self.grok2api_admin_username_var.get().strip()
+            config["grok2api_admin_password"] = self.grok2api_admin_password_var.get()
             _mode_text = str(self.cpa_token_mode_var.get()).strip()
             if "协议" in _mode_text:
                 config["cpa_token_mode"] = "device_protocol"
@@ -3178,6 +3210,9 @@ class GrokRegisterGUI:
         config["cpa_remote_url"] = self.cpa_remote_url_var.get().strip()
         config["cpa_management_key"] = self.cpa_management_key_var.get().strip()
         config["grok2api_auth_dir"] = self.grok2api_auth_dir_var.get().strip()
+        config["grok2api_remote_url"] = self.grok2api_remote_url_var.get().strip()
+        config["grok2api_admin_username"] = self.grok2api_admin_username_var.get().strip()
+        config["grok2api_admin_password"] = self.grok2api_admin_password_var.get()
         raw_paths = [x.strip() for x in self.cloudflare_paths_var.get().split(",") if x.strip()]
         if len(raw_paths) >= 4:
             config["cloudflare_path_domains"] = raw_paths[0] if raw_paths[0].startswith("/") else ("/" + raw_paths[0])
@@ -3214,8 +3249,8 @@ class GrokRegisterGUI:
             if missing:
                 self.log(f"[!] CloudMail 模式缺少配置: {', '.join(missing)}")
                 return
-        if config.get("cpa_auto_add") and not config.get("cpa_auth_dir") and not config.get("cpa_remote_url") and not config.get("grok2api_auth_dir"):
-            self.log("[!] 已开启 SSO→auth，但未配置 CPA auth 目录 / 远程地址 / Grok2API 目录")
+        if config.get("cpa_auto_add") and not config.get("cpa_auth_dir") and not config.get("cpa_remote_url") and not config.get("grok2api_auth_dir") and not config.get("grok2api_remote_url"):
+            self.log("[!] 已开启 SSO→auth，但未配置 CPA / Grok2API 写入目标")
             return
         try:
             count = int(self.count_var.get())

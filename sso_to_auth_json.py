@@ -1718,6 +1718,60 @@ def write_grok2api_auth(auth_dir: Path, token: dict, email: str = "") -> Path:
     return path
 
 
+def upload_grok2api_auth_remote(
+    base_url: str,
+    username: str,
+    password: str,
+    token: dict,
+    email: str = "",
+    timeout: int = 30,
+    proxy: str = "",
+) -> str:
+    """Login to Grok2API and import one Build credential via its Admin API."""
+    base = str(base_url or "").strip().rstrip("/")
+    user = str(username or "").strip()
+    secret = str(password or "")
+    if not base:
+        raise ValueError("grok2api_remote_url 为空")
+    if not user or not secret:
+        raise ValueError("Grok2API 管理员账号或密码为空")
+
+    proxies = {"http": proxy, "https": proxy} if proxy else None
+    login = requests.post(
+        f"{base}/api/admin/v1/auth/login",
+        json={"username": user, "password": secret},
+        timeout=timeout,
+        proxies=proxies,
+        impersonate="chrome",
+    )
+    if login.status_code >= 400:
+        raise RuntimeError(f"Grok2API 登录失败 HTTP {login.status_code}")
+    try:
+        access_token = str(login.json()["data"]["tokens"]["accessToken"]).strip()
+    except (KeyError, TypeError, ValueError) as exc:
+        raise RuntimeError("Grok2API 登录响应缺少 accessToken") from exc
+    if not access_token:
+        raise RuntimeError("Grok2API 登录响应缺少 accessToken")
+
+    key, entry = token_to_auth_entry(token, email=email)
+    document = json.dumps({key: entry}, ensure_ascii=False).encode("utf-8")
+    name = grok2api_auth_filename(entry, email=email)
+    imported = requests.post(
+        f"{base}/api/admin/v1/accounts/import",
+        headers={"Authorization": f"Bearer {access_token}"},
+        files={"files": (name, document, "application/json")},
+        timeout=timeout,
+        proxies=proxies,
+        impersonate="chrome",
+    )
+    if imported.status_code >= 400:
+        raise RuntimeError(f"Grok2API 远程导入失败 HTTP {imported.status_code}")
+    body = str(imported.text or "")
+    if "event: error" in body or "event: complete" not in body:
+        raise RuntimeError("Grok2API 远程导入未返回成功结果")
+    return name
+
+
 def upload_cpa_auth_remote(
     base_url: str,
     management_key: str,
@@ -1949,6 +2003,9 @@ def apply_config_defaults(args) -> None:
         args.grok2api_auth_dir = _resolve_config_path(base, config.get("grok2api_auth_dir"))
     args.cpa_remote_url = args.cpa_remote_url or str(config.get("cpa_remote_url") or "").strip()
     args.cpa_management_key = args.cpa_management_key or str(config.get("cpa_management_key") or "").strip()
+    args.grok2api_remote_url = args.grok2api_remote_url or str(config.get("grok2api_remote_url") or "").strip()
+    args.grok2api_admin_username = args.grok2api_admin_username or str(config.get("grok2api_admin_username") or "").strip()
+    args.grok2api_admin_password = args.grok2api_admin_password or str(config.get("grok2api_admin_password") or "")
     args.proxy = args.proxy or str(config.get("proxy") or "").strip()
     if getattr(args, "bfs_check", None) is None:
         args.bfs_check = _config_bool(config.get("bfs_check"), True)
@@ -1969,6 +2026,7 @@ def should_create_default_out_dir(args, record_count: int) -> bool:
             args.cpa_auth_dir,
             args.cpa_remote_url,
             args.grok2api_auth_dir,
+            args.grok2api_remote_url,
         )
     )
     return record_count > 1 and not has_target and not args.merge
@@ -2039,6 +2097,9 @@ def main() -> int:
         default=None,
         help="额外写出 Grok2API / ~/.grok 风格 g2a-<email>.json 到该目录",
     )
+    ap.add_argument("--grok2api-remote-url", default=None, help="远程 Grok2API 地址")
+    ap.add_argument("--grok2api-admin-username", default=None, help="远程 Grok2API 管理员账号")
+    ap.add_argument("--grok2api-admin-password", default=None, help="远程 Grok2API 管理员密码")
     ap.add_argument(
         "--prefer",
         choices=("device", "auth_code"),
@@ -2136,6 +2197,8 @@ def main() -> int:
         ap.error("使用 --cpa-remote-url 时必须同时提供 --cpa-management-key")
     if args.cpa_management_key and not args.cpa_remote_url:
         ap.error("使用 --cpa-management-key 时必须同时提供 --cpa-remote-url")
+    if args.grok2api_remote_url and not (args.grok2api_admin_username and args.grok2api_admin_password):
+        ap.error("使用 --grok2api-remote-url 时必须同时提供 Grok2API 管理员账号和密码")
 
     input_count = len(records)
     existing_emails = existing_cpa_emails(args.cpa_auth_dir)
@@ -2162,6 +2225,7 @@ def main() -> int:
         and not args.cpa_auth_dir
         and not args.cpa_remote_url
         and not args.grok2api_auth_dir
+        and not args.grok2api_remote_url
         and len(records) == 1
     ):
         args.out = str(Path.home() / ".grok" / "auth.json")
@@ -2276,6 +2340,16 @@ def main() -> int:
             if args.grok2api_auth_dir:
                 gp = write_grok2api_auth(Path(args.grok2api_auth_dir), token, email=email)
                 print(f"  💾 Grok2API → {gp}")
+            if args.grok2api_remote_url:
+                name = upload_grok2api_auth_remote(
+                    args.grok2api_remote_url,
+                    args.grok2api_admin_username,
+                    args.grok2api_admin_password,
+                    token,
+                    email=email,
+                    proxy=args.proxy,
+                )
+                print(f"  💾 Grok2API 远程 → {args.grok2api_remote_url.rstrip('/')}/.../{name}")
 
             if args.cpa_auth_dir or args.cpa_remote_url:
                 cpa_record = token_to_cpa_record(
