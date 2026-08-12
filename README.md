@@ -146,6 +146,8 @@ cp config.example.json config.json
 
 Web 控制台的“远程 Grok2API”卡片可保存以上配置并测试管理员登录。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。
 
+Docker 镜像由 GitHub Actions 自动发布到 `ghcr.io/yiranxiaohui/grok-register-panel`；部署和持久化目录示例见 [DEPLOYMENT.md](DEPLOYMENT.md#docker--ghcr)。
+
 ### 环境变量
 
 | 变量 | 默认 | 说明 |

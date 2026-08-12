@@ -75,6 +75,41 @@ PYTHON_BIN=.venv/bin/python scripts/run_tests.sh
 .venv/bin/python scripts/harden_runtime_permissions.py .
 ```
 
+### Docker / GHCR
+
+仓库的 `docker-publish.yml` 会在推送 `main`、推送 `v*` 标签或手动触发时构建
+`linux/amd64` 镜像并推送到 `ghcr.io/<仓库所有者>/<仓库名>`。工作流使用内置
+`GITHUB_TOKEN`，无需额外配置仓库密钥；仓库 Actions 权限需要允许写入 Packages。
+
+首次准备宿主机运行目录和配置：
+
+```bash
+mkdir -p runtime/accounts runtime/cpa_auth runtime/grok2api_auth runtime/log
+cp config.example.json runtime/config.json
+sudo chown -R 10001:10001 runtime
+chmod 700 runtime runtime/accounts runtime/cpa_auth runtime/grok2api_auth runtime/log
+chmod 600 runtime/config.json
+```
+
+启动镜像：
+
+```bash
+docker run -d --name grok-register-panel \
+  --restart unless-stopped \
+  --init \
+  -p 8787:8787 \
+  -e MONITOR_TOKEN="$(python3 -c 'import secrets; print(secrets.token_urlsafe(32))')" \
+  -v "$PWD/runtime/config.json:/app/config.json" \
+  -v "$PWD/runtime/accounts:/app/accounts" \
+  -v "$PWD/runtime/cpa_auth:/app/cpa_auth" \
+  -v "$PWD/runtime/grok2api_auth:/app/grok2api_auth" \
+  -v "$PWD/runtime/log:/app/log" \
+  ghcr.io/yiranxiaohui/grok-register-panel:latest
+```
+
+镜像以非 root 用户 `10001` 运行并内置 Camoufox、Firefox 运行依赖、Xvfb 和
+`tini`。不要把真实 `config.json`、账号、代理或 auth 文件加入构建上下文。
+
 如果旧版本曾把自动 ASN 黑名单写入 `browser_session.py`，覆盖代码前先迁移：
 
 ```bash

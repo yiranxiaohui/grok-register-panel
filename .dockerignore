@@ -1,0 +1,16 @@
+.git
+.github
+.venv
+__pycache__
+*.py[cod]
+*.log
+.env*
+config.json
+accounts
+cpa_auth
+grok2api_auth
+log
+proxies*.txt
+stickies*.txt
+auth_out
+docs/screenshots

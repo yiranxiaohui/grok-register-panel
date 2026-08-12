@@ -33,6 +33,7 @@ tests=(
   tests/test_batch_chdir_import.py
   tests/test_batch_supervisor.py
   tests/test_orchestrator_policy.py
+  tests/test_docker_packaging.py
 )
 
 for test_file in "${tests[@]}"; do
