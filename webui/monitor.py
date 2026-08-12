@@ -230,7 +230,7 @@ def load_control() -> dict:
         c.setdefault("risk_pause", 10)
         c.setdefault("batch_count", 40)
         c.setdefault("add_count", 40)  # 再跑 N 个
-        c.setdefault("mode", "orch")  # orch | batch
+        c.setdefault("mode", "orch")  # orch | batch | continuous
         return c
 
 
@@ -263,7 +263,11 @@ def save_control(updates: dict) -> dict:
             c["add_count"] = max(1, min(500, int(c.get("add_count", 40))))
         except Exception:
             c["add_count"] = 40
-        c["mode"] = c.get("mode") if c.get("mode") in ("orch", "batch") else "orch"
+        c["mode"] = (
+            c.get("mode")
+            if c.get("mode") in ("orch", "batch", "continuous")
+            else "orch"
+        )
         for key in ("base_cpa", "target_cpa"):
             if c.get(key) is None or str(c.get(key)).strip() == "":
                 c.pop(key, None)
@@ -703,6 +707,39 @@ def _registration_env() -> dict[str, str]:
     return env
 
 
+def _prepare_orch_control(control: dict, cpa_now: int) -> tuple[dict, bool, int, int | None]:
+    c = dict(control or {})
+    continuous = c.get("mode") == "continuous"
+    add_count = 0
+    need = None
+    if continuous:
+        c["base_cpa"] = cpa_now
+        c["target_cpa"] = None
+        return c, True, add_count, need
+
+    raw_add_count = c.get("add_count")
+    try:
+        add_count = int(raw_add_count) if raw_add_count is not None else 0
+    except Exception:
+        add_count = 0
+    target = c.get("target_cpa")
+    try:
+        target = int(target) if target is not None else None
+    except Exception:
+        target = None
+    if add_count > 0:
+        c["base_cpa"] = cpa_now
+        c["target_cpa"] = cpa_now + add_count
+    elif target is None or target <= cpa_now:
+        n = int(c.get("batch_count") or 40)
+        c["add_count"] = n
+        c["base_cpa"] = cpa_now
+        c["target_cpa"] = cpa_now + n
+        add_count = n
+    need = int(c.get("target_cpa") or 0) - cpa_now
+    return c, False, add_count, need
+
+
 def _start_orch_unlocked():
     proc = process_running()
     if proc.get("orch_running") or proc.get("batch_running"):
@@ -714,35 +751,17 @@ def _start_orch_unlocked():
         return {"ok": False, "error": prerequisite_error}
     c = load_control()
     now = cpa_count()
-    add_count = c.get("add_count")
-    try:
-        add_count = int(add_count) if add_count is not None else 0
-    except Exception:
-        add_count = 0
-    target = c.get("target_cpa")
-    try:
-        target = int(target) if target is not None else None
-    except Exception:
-        target = None
-    if add_count > 0:
-        c["base_cpa"] = now
-        c["target_cpa"] = now + add_count
-    elif target is None or target <= now:
-        n = int(c.get("batch_count") or 40)
-        c["add_count"] = n
-        c["base_cpa"] = now
-        c["target_cpa"] = now + n
-        add_count = n
+    c, continuous, add_count, need = _prepare_orch_control(c, now)
     c = save_control(c)
-    need = int(c.get("target_cpa") or 0) - now
     ensure_private_dir(LOG_DIR)
     stdout_path = LOG_DIR / "orch100-stdout.log"
     fd = os.open(stdout_path, os.O_WRONLY | os.O_CREAT | os.O_APPEND, 0o600)
     best_effort_fchmod(fd, 0o600)
     stdout = os.fdopen(fd, "a", encoding="utf-8")
+    run_goal = "continuous" if continuous else f"target={c.get('target_cpa')} need={need}"
     stdout.write(
         f"\n--- monitor start {time.strftime('%Y-%m-%dT%H:%M:%SZ')} "
-        f"workers={c.get('workers')} cpa={now} target={c.get('target_cpa')} need={need} ---\n"
+        f"workers={c.get('workers')} cpa={now} {run_goal} ---\n"
     )
     stdout.flush()
     try:
@@ -757,18 +776,29 @@ def _start_orch_unlocked():
     finally:
         stdout.close()
     write_pid_file(ORCH_PID, p.pid)
-    return {
+    result = {
         "ok": True,
         "pid": p.pid,
-        "mode": "orch",
+        "mode": "continuous" if continuous else "orch",
         "workers": c.get("workers"),
         "cpa_now": now,
-        "target_cpa": c.get("target_cpa"),
-        "need": need,
-        "add_count": add_count or c.get("add_count"),
         "control": c,
-        "message": f"已启动 orch pid={p.pid} 目标 CPA {c.get('target_cpa')} (再跑 {need})",
     }
+    if continuous:
+        result["message"] = f"已启动持续注册 pid={p.pid}，将运行至手动停止"
+    else:
+        result.update(
+            {
+                "target_cpa": c.get("target_cpa"),
+                "need": need,
+                "add_count": add_count or c.get("add_count"),
+                "message": (
+                    f"已启动目标编排 pid={p.pid} 目标 CPA "
+                    f"{c.get('target_cpa')} (再跑 {need})"
+                ),
+            }
+        )
+    return result
 
 
 def start_orch():
@@ -1143,8 +1173,15 @@ HTML = r"""<!DOCTYPE html>
   .list-pager button:disabled { opacity: .4; cursor: not-allowed; }
   .control-grid {
     display: grid;
-    grid-template-columns: minmax(220px, 1.6fr) minmax(150px, .9fr) repeat(4, minmax(100px, .55fr)) minmax(258px, auto);
+    grid-template-columns: minmax(220px, 1.45fr) minmax(150px, .8fr) minmax(330px, 1.35fr) minmax(300px, auto);
     gap: 12px;
+    align-items: end;
+  }
+  .mode-fields {
+    min-width: 0;
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(105px, 1fr));
+    gap: 10px;
     align-items: end;
   }
   .control-actions {
@@ -1157,6 +1194,15 @@ HTML = r"""<!DOCTYPE html>
   .control-panel .msg:empty { display: none; }
   .field { min-width: 0; display: flex; flex-direction: column; gap: 6px; }
   .field label { color: var(--muted); font-size: 12px; font-weight: 560; }
+  .control-number { font-family: "Geist Mono", monospace; font-variant-numeric: tabular-nums; }
+  .mode-help {
+    margin: 10px 0 0;
+    padding-top: 9px;
+    border-top: 1px solid var(--border);
+    color: var(--muted);
+    font-size: 11px;
+    line-height: 1.5;
+  }
   input, select, textarea, button { font: inherit; letter-spacing: 0; }
   input, select, textarea {
     width: 100%;
@@ -1723,8 +1769,8 @@ HTML = r"""<!DOCTYPE html>
     }
   }
   @media (max-width: 1120px) {
-    .control-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
-    .field-token { grid-column: span 2; }
+    .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mode-fields { grid-column: 1 / -1; }
     .control-actions { grid-column: 1 / -1; padding-top: 14px; border-top: 1px solid var(--border); }
     .metric-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); }
     .three { grid-template-columns: minmax(0, 1fr); }
@@ -1740,8 +1786,10 @@ HTML = r"""<!DOCTYPE html>
     .page-heading { margin-bottom: 16px; }
     .page-title { font-size: 22px; }
     .card { padding: 14px; }
-    .control-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-    .field-token, .field-mode { grid-column: 1 / -1; }
+    .control-grid { grid-template-columns: minmax(0, 1fr); }
+    .field-token, .field-mode, .mode-fields, .control-actions { grid-column: 1 / -1; }
+    .mode-fields { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+    .mode-fields[data-mode="continuous"] { grid-template-columns: minmax(0, 1fr); }
     .control-actions { justify-content: stretch; }
     .control-actions button { flex: 1 1 0; padding-inline: 8px; }
     .metric-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -1915,22 +1963,25 @@ HTML = r"""<!DOCTYPE html>
       </div>
       <div class="field field-mode">
         <label for="mode">运行模式</label>
-        <select id="mode">
-          <option value="orch">持续编排</option>
+        <select id="mode" onchange="syncControlMode()">
+          <option value="orch">目标编排</option>
           <option value="batch">单批运行</option>
+          <option value="continuous">持续注册</option>
         </select>
       </div>
-      <div class="field"><label for="workers-input">并发数</label>
-        <input type="number" id="workers-input" min="1" max="24" value="3"/>
-      </div>
-      <div class="field"><label for="batch_count">单批数量</label>
-        <input type="number" id="batch_count" min="1" max="200" value="40"/>
-      </div>
-      <div class="field"><label for="add_count">追加目标</label>
-        <input type="number" id="add_count" min="1" max="500" value="40" title="每次启动从当前 CPA 再注册 N 个"/>
-      </div>
-      <div class="field"><label for="risk_pause">风控阈值</label>
-        <input type="number" id="risk_pause" min="1" max="50" value="10"/>
+      <div class="mode-fields" id="mode-fields">
+        <div class="field" id="field-workers"><label for="workers-input">并发数</label>
+          <input class="control-number" type="number" id="workers-input" min="1" max="24" step="1" inputmode="numeric" autocomplete="off" value="3"/>
+        </div>
+        <div class="field" id="field-batch-count" hidden><label for="batch_count">本批尝试数量</label>
+          <input class="control-number" type="number" id="batch_count" min="1" max="200" step="1" inputmode="numeric" autocomplete="off" value="40"/>
+        </div>
+        <div class="field" id="field-add-count"><label for="add_count">目标新增数量</label>
+          <input class="control-number" type="number" id="add_count" min="1" max="500" step="1" inputmode="numeric" autocomplete="off" value="40" title="从当前 CPA 总量开始，再成功注册 N 个"/>
+        </div>
+        <div class="field" id="field-risk-pause"><label for="risk_pause">风控熔断阈值</label>
+          <input class="control-number" type="number" id="risk_pause" min="1" max="50" step="1" inputmode="numeric" autocomplete="off" value="10"/>
+        </div>
       </div>
       <div class="control-actions">
         <button class="primary" id="btn-start" onclick="doStart()">启动任务</button>
@@ -1938,6 +1989,7 @@ HTML = r"""<!DOCTYPE html>
         <button onclick="saveCtrl()">保存设置</button>
       </div>
     </div>
+    <p class="mode-help" id="mode-help" aria-live="polite">从当前 CPA 总量开始，按目标新增数量自动拆分为多批运行。</p>
     <div class="msg" id="ctrl-msg" role="status" aria-live="polite"></div>
   </section>
 
@@ -1963,11 +2015,11 @@ HTML = r"""<!DOCTYPE html>
           </div>
           <div class="help-guide-item">
             <h3>选择模式</h3>
-            <p><code>持续编排</code>按追加目标多轮运行；<code>单批运行</code>只执行单批数量。首次建议并发 2-3。</p>
+            <p><code>目标编排</code>按新增目标多轮运行；<code>单批运行</code>只执行一批；<code>持续注册</code>只需设置并发数，会一直运行到手动停止。首次建议并发 2-3。</p>
           </div>
           <div class="help-guide-item">
             <h3>保存并启动</h3>
-            <p>输入当前面板令牌，先保存设置再启动。追加目标表示从现有 CPA 数量继续增加多少。</p>
+            <p>输入当前面板令牌，选择模式后直接修改当前可见参数。目标新增数量表示从现有 CPA 数量继续增加多少。</p>
           </div>
           <div class="help-guide-item">
             <h3>观察结果</h3>
@@ -1988,9 +2040,9 @@ HTML = r"""<!DOCTYPE html>
             <summary>提示访问令牌不匹配或 401</summary>
             <div class="faq-answer">重新输入当前面板令牌并保存。令牌只保存在当前浏览器的 localStorage 中，换端口、设备或浏览器后需要重新输入。</div>
           </details>
-          <details class="faq-item" data-faq-item data-search="启动 立即结束 目标 cpa add_count 追加目标">
+          <details class="faq-item" data-faq-item data-search="启动 立即结束 目标 cpa add_count 目标新增 持续注册">
             <summary>点击启动后立即结束</summary>
-            <div class="faq-answer">通常是 CPA 已达到旧目标。提高“追加目标”后再启动；持续编排会以当前 CPA 为基线增加 N，单批运行只执行“单批数量”。</div>
+            <div class="faq-answer">目标编排会在新增目标达成后结束，单批运行只执行“本批尝试数量”。需要持续运行时选择“持续注册”，它会自动接续批次，直到点击停止任务；预检或连续批次异常仍会安全退出。</div>
           </details>
           <details class="faq-item" data-faq-item data-search="风控 policy deny registration risk botFlagSource ip 邮箱 域名">
             <summary>出现 policy=deny 或注册风控</summary>
@@ -2383,6 +2435,7 @@ let okRowsCache = [];
 let failRowsCache = [];
 // 完整成功统计（jsonl / by_day）；2s 轮询只更新本批数字，不能冲掉
 let lastFullStats = null;
+let controlDirty = false;
 function syncThemeButtons() {
   const theme = document.documentElement.dataset.theme || "light";
   document.querySelectorAll("[data-theme-choice]").forEach(button => {
@@ -3123,25 +3176,63 @@ async function refresh() {
 }
 function fillControl(d) {
   const c = d.control || {};
-  if (document.activeElement && ["workers-input","batch_count","add_count","risk_pause","mode"].includes(document.activeElement.id)) return;
-  if (c.workers != null) document.getElementById("workers-input").value = c.workers;
-  if (c.batch_count != null) document.getElementById("batch_count").value = c.batch_count;
-  if (c.add_count != null && document.getElementById("add_count")) document.getElementById("add_count").value = c.add_count;
-  if (c.risk_pause != null) document.getElementById("risk_pause").value = c.risk_pause;
-  if (c.mode) document.getElementById("mode").value = c.mode;
+  if (controlDirty) {
+    syncControlMode();
+    return;
+  }
+  const setIfIdle = (id, value) => {
+    const element = document.getElementById(id);
+    if (element && value != null && document.activeElement !== element) element.value = value;
+  };
+  setIfIdle("workers-input", c.workers);
+  setIfIdle("batch_count", c.batch_count);
+  setIfIdle("add_count", c.add_count);
+  setIfIdle("risk_pause", c.risk_pause);
+  setIfIdle("mode", c.mode);
+  syncControlMode();
+}
+function syncControlMode() {
+  const mode = document.getElementById("mode").value || "orch";
+  document.getElementById("mode-fields").dataset.mode = mode;
+  document.getElementById("field-batch-count").hidden = mode !== "batch";
+  document.getElementById("field-add-count").hidden = mode !== "orch";
+  document.getElementById("field-risk-pause").hidden = mode !== "orch";
+  const help = {
+    orch: "从当前 CPA 总量开始，按目标新增数量自动拆分为多批运行。",
+    batch: "只运行一批；本批尝试数量包含成功和失败的注册尝试。",
+    continuous: "只需设置并发数；系统会自动接续新批次，直到点击停止任务。",
+  };
+  document.getElementById("mode-help").textContent = help[mode] || help.orch;
+}
+function readControlNumber(id, label) {
+  const element = document.getElementById(id);
+  const value = Number(element.value);
+  const min = Number(element.min);
+  const max = Number(element.max);
+  const valid = Number.isInteger(value) && value >= min && value <= max;
+  element.setCustomValidity(valid ? "" : `${label}请输入 ${min}-${max} 的整数`);
+  if (!valid) {
+    element.reportValidity();
+    element.focus();
+    throw new Error(`${label}请输入 ${min}-${max} 的整数`);
+  }
+  return value;
 }
 function controlBody() {
-  return {
-    workers: Number(document.getElementById("workers-input").value || 3),
-    batch_count: Number(document.getElementById("batch_count").value || 40),
-    add_count: Number((document.getElementById("add_count") || {}).value || 40),
-    risk_pause: Number(document.getElementById("risk_pause").value || 10),
-    mode: document.getElementById("mode").value || "orch",
-  };
+  const mode = document.getElementById("mode").value || "orch";
+  const body = { workers: readControlNumber("workers-input", "并发数"), mode };
+  if (mode === "batch") body.batch_count = readControlNumber("batch_count", "本批尝试数量");
+  if (mode === "orch") {
+    body.add_count = readControlNumber("add_count", "目标新增数量");
+    body.risk_pause = readControlNumber("risk_pause", "风控熔断阈值");
+  }
+  return body;
 }
 async function saveCtrl() {
   try {
     const j = await api("/api/control", { method: "POST", body: JSON.stringify(controlBody()) });
+    controlDirty = false;
+    fillControl({ control: j });
     setMsg("ctrl-msg", "设置已保存，并发数 " + j.workers, "ok");
   } catch (e) { setMsg("ctrl-msg", String(e.message || e), "err"); }
 }
@@ -3149,9 +3240,11 @@ async function doStart() {
   document.getElementById("btn-start").disabled = true;
   setMsg("ctrl-msg", "正在启动…", "");
   try {
-    await api("/api/control", { method: "POST", body: JSON.stringify(controlBody()) });
-    const j = await api("/api/start", { method: "POST", body: JSON.stringify(controlBody()) });
+    const body = controlBody();
+    const j = await api("/api/start", { method: "POST", body: JSON.stringify(body) });
     if (j.ok === false) throw new Error(j.error || "start failed");
+    controlDirty = false;
+    if (j.control) fillControl({ control: j.control });
     const msg = j.message || ("已启动，进程 " + (j.pid || "?") + "，模式 " + (j.mode || ""));
     setMsg("ctrl-msg", msg + (j.need != null ? "，剩余 " + j.need : ""), "ok");
     setTimeout(refresh, 1000);
@@ -3388,9 +3481,10 @@ function render(d) {
   document.getElementById("logname").textContent =
     (d.log_name || d.log || "--") + (d.process && d.process.etime ? " / 用时 " + d.process.etime : "");
   const on = !!(d.process && d.process.running);
+  const continuousMode = !!(d.control && d.control.mode === "continuous");
   document.getElementById("run-dot").className = "dot " + (on ? "on" : (d.ended ? "done" : "off"));
   let runLabel = "已停止";
-  if (d.process && d.process.orch_running) runLabel = "编排运行 #" + d.process.orch_pid;
+  if (d.process && d.process.orch_running) runLabel = (continuousMode ? "持续注册 #" : "目标编排 #") + d.process.orch_pid;
   else if (d.process && d.process.batch_running) runLabel = "单批运行 #" + d.process.batch_pid;
   else if (d.ended) runLabel = "已完成";
   document.getElementById("run-label").textContent = runLabel;
@@ -3431,7 +3525,7 @@ function render(d) {
     ["BFS 标记", d.bfs ?? 0, (d.bfs ?? 0) > 0 ? "warn" : "ok", "JWT claim 命中"],
     ["黑名单 ASN", (d.blacklist && d.blacklist.count) ?? "--", "accent", "更新错误 " + ((d.blacklist_update && d.blacklist_update.error_count) ?? 0)],
     ["本批代理流量", hasTrafficBatch ? formatBytes(trafficTotal) : "--", "accent", trafficSub],
-    ["预计完成", d.ended ? "已完成" : (d.eta || "--"), "", "并发 " + (d.workers ?? "--") + (d.rate_per_min != null ? " / " + d.rate_per_min + " 每分钟" : "")],
+    [continuousMode ? "持续注册" : "预计完成", continuousMode ? (on ? "运行中" : "待启动") : (d.ended ? "已完成" : (d.eta || "--")), continuousMode && on ? "ok" : "", "并发 " + (d.workers ?? "--") + (d.rate_per_min != null ? " / " + d.rate_per_min + " 每分钟" : "")],
     ["每批平均流量", trafficSummary.bytes_per_batch != null ? formatBytes(trafficSummary.bytes_per_batch) : "--", "accent", trafficAverageSub],
     ["每个成功号平均流量", trafficSummary.bytes_per_success != null ? formatBytes(trafficSummary.bytes_per_success) : "--", "ok", trafficSuccessSub],
   ];
@@ -3552,10 +3646,15 @@ document.getElementById("fail-next").addEventListener("click", () => {
   failPage += 1;
   renderFailPage();
 });
+["mode", "workers-input", "batch_count", "add_count", "risk_pause"].forEach(id => {
+  const element = document.getElementById(id);
+  if (element) element.addEventListener("input", () => { controlDirty = true; });
+});
 
 syncThemeButtons();
 initHelp();
 loadTokenField();
+syncControlMode();
 refresh();
 setInterval(refresh, 2000);
 // 完整成功统计：启动拉一次，之后每 30s 刷新（避免 2s 轮询冲掉）
@@ -3767,9 +3866,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if u.path == "/api/start":
             try:
-                if body:
-                    save_control(body)
-                mode = (body or {}).get("mode") or load_control().get("mode") or "orch"
+                control = save_control(body) if body else load_control()
+                mode = control.get("mode") or "orch"
                 if mode == "batch":
                     self._json(200, start_batch_only())
                 else:

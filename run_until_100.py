@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Orch: run batches until CPA target. Workers/risk pause from monitor_control.json."""
+"""Orchestrate target-based or continuous registration batches."""
 from __future__ import annotations
 
 import json
@@ -32,6 +32,8 @@ BASE0 = int(__import__("os").environ.get("ORCH_BASE_CPA", "0") or 0)
 TARGET_CPA = BASE0 + int(__import__("os").environ.get("ORCH_ADD_COUNT", "100") or 100)
 RISK_PAUSE = 10
 MAX_ROUNDS = 60
+CONTINUOUS = False
+CONTINUOUS_BATCH_COUNT = 40
 CONTROL_FILE = LOG_DIR / "monitor_control.json"
 
 
@@ -45,8 +47,9 @@ def load_control() -> dict:
 
 
 def apply_control() -> None:
-    global WORKERS, RISK_PAUSE, TARGET_CPA, BASE0
+    global WORKERS, RISK_PAUSE, TARGET_CPA, BASE0, CONTINUOUS
     c = load_control()
+    CONTINUOUS = c.get("mode") == "continuous"
     if c.get("workers"):
         try:
             WORKERS = max(1, min(24, int(c["workers"])))
@@ -57,6 +60,9 @@ def apply_control() -> None:
             RISK_PAUSE = max(1, int(c["risk_pause"]))
         except Exception:
             pass
+    if CONTINUOUS:
+        BASE0 = cpa_count()
+        return
     # 再跑 N 个：以当前 CPA 为基线
     add_count = c.get("add_count")
     if add_count is not None and str(add_count).strip() != "":
@@ -277,9 +283,19 @@ def batch_alive(pid: int) -> bool:
 def main():
     apply_control()
     kill_batch()
-    log(f"ORCH fixed start cpa_now={cpa_count()} base0={BASE0} target={TARGET_CPA} need={TARGET_CPA - cpa_count()}")
-    need0 = TARGET_CPA - cpa_count()
-    if need0 <= 0:
+    current = cpa_count()
+    if CONTINUOUS:
+        log(
+            f"ORCH continuous start cpa_now={current} base0={BASE0} "
+            f"batch_size={CONTINUOUS_BATCH_COUNT}"
+        )
+    else:
+        log(
+            f"ORCH target start cpa_now={current} base0={BASE0} "
+            f"target={TARGET_CPA} need={TARGET_CPA - current}"
+        )
+    need0 = TARGET_CPA - current
+    if not CONTINUOUS and need0 <= 0:
         log(f"TARGET already met (need={need0}). Set monitor add_count / target_cpa then restart.")
         log(f"ORCH DONE cpa={cpa_count()} delta={cpa_count() - BASE0} target={TARGET_CPA} rounds=0")
         log(f"final blocklist={sorted(read_blocklist_asns())}")
@@ -290,11 +306,20 @@ def main():
     round_i = 0
     consecutive_batch_failures = 0
     failure_limit = orchestrator_failure_limit()
-    while cpa_count() < TARGET_CPA and round_i < MAX_ROUNDS:
+    while CONTINUOUS or (cpa_count() < TARGET_CPA and round_i < MAX_ROUNDS):
         round_i += 1
-        need = TARGET_CPA - cpa_count()
-        batch_n = min(max(need + 8, 15), 40)
-        log(f"=== ROUND {round_i} need={need} batch_n={batch_n} cpa={cpa_count()} block={sorted(read_blocklist_asns())} ===")
+        current = cpa_count()
+        need = None if CONTINUOUS else TARGET_CPA - current
+        batch_n = (
+            CONTINUOUS_BATCH_COUNT
+            if CONTINUOUS
+            else min(max(int(need) + 8, 15), 40)
+        )
+        goal = "continuous" if CONTINUOUS else f"need={need}"
+        log(
+            f"=== ROUND {round_i} {goal} batch_n={batch_n} cpa={current} "
+            f"block={sorted(read_blocklist_asns())} ==="
+        )
         try:
             proc, logpath = start_batch(batch_n)
         except Exception as e:
@@ -318,8 +343,9 @@ def main():
             risks = count_risk(logpath)
             oks = count_ok(logpath)
             delta = cpa_count() - BASE0
-            log(f"  mon ok={oks} risk={risks} cpa_delta={delta}/100 alive={alive}")
-            if cpa_count() >= TARGET_CPA:
+            delta_goal = "continuous" if CONTINUOUS else str(max(TARGET_CPA - BASE0, 0))
+            log(f"  mon ok={oks} risk={risks} cpa_delta={delta}/{delta_goal} alive={alive}")
+            if not CONTINUOUS and cpa_count() >= TARGET_CPA:
                 log("TARGET reached")
                 kill_batch()
                 break
@@ -358,11 +384,12 @@ def main():
                 kill_batch()
                 break
         time.sleep(3)
-        if cpa_count() >= TARGET_CPA:
+        if not CONTINUOUS and cpa_count() >= TARGET_CPA:
             break
 
     final = cpa_count()
-    log(f"ORCH DONE cpa={final} delta={final - BASE0} target={TARGET_CPA} rounds={round_i}")
+    target_label = "continuous" if CONTINUOUS else str(TARGET_CPA)
+    log(f"ORCH DONE cpa={final} delta={final - BASE0} target={target_label} rounds={round_i}")
     log(f"final blocklist={sorted(read_blocklist_asns())}")
     print(f"SUMMARY delta={final - BASE0} cpa={final} log={ORCH_LOG}", flush=True)
 

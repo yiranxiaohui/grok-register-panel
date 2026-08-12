@@ -4,6 +4,7 @@
 
 ### Added
 
+- Add a continuous-registration panel mode that only requires concurrency and automatically starts successive batches until manually stopped.
 - Download all locally converted Grok2API credentials as one authenticated, import-ready JSON batch from the Web panel.
 - Carry each account's fixed registration proxy into remote Grok2API imports so supported instances create a strict per-account egress binding.
 - Integrate AnyMail domain mailboxes with scoped API-key authentication, domain discovery, OTP polling, cleanup, panel configuration, and managed-domain rotation.

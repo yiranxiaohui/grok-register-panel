@@ -228,6 +228,32 @@ def test_panel_registration_env_enables_guarded_cache():
             os.environ["GROK_STATIC_CACHE_DIR"] = previous_dir
 
 
+def test_continuous_control_mode_has_no_target_and_is_persisted():
+    previous_control = monitor.CONTROL_FILE
+    with tempfile.TemporaryDirectory() as temp:
+        monitor.CONTROL_FILE = Path(temp) / "monitor_control.json"
+        try:
+            saved = monitor.save_control(
+                {"mode": "continuous", "workers": 6, "target_cpa": 999}
+            )
+            prepared, continuous, add_count, need = monitor._prepare_orch_control(
+                saved, 12
+            )
+            assert saved["mode"] == "continuous"
+            assert saved["workers"] == 6
+            assert continuous is True
+            assert prepared["base_cpa"] == 12
+            assert prepared["target_cpa"] is None
+            assert add_count == 0
+            assert need is None
+
+            persisted = monitor.save_control(prepared)
+            assert "target_cpa" not in persisted
+            assert persisted["mode"] == "continuous"
+        finally:
+            monitor.CONTROL_FILE = previous_control
+
+
 def test_proxy_api_auth_mutations_and_redaction():
     token = "test-proxy-token-123456"
     secret = "proxy-secret-value-99"
@@ -570,6 +596,7 @@ if __name__ == "__main__":
     test_monitor_http_auth_and_headers()
     test_grok2api_export_download_always_requires_monitor_token()
     test_panel_registration_env_enables_guarded_cache()
+    test_continuous_control_mode_has_no_target_and_is_persisted()
     test_proxy_api_auth_mutations_and_redaction()
     test_email_domain_api_auth_and_mutations()
     test_email_provider_api_auth_secret_masking_and_probe()

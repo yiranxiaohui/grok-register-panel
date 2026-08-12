@@ -76,6 +76,22 @@ def test_compact_overview_density():
     assert '@media (min-width: 1121px)' in mon
     assert '.control-panel .control-actions button {' in mon
 
+def test_mode_specific_registration_controls():
+    mon = (ROOT / 'webui/monitor.py').read_text(encoding='utf-8')
+    html = mon.split('HTML = r"""', 1)[1].split('"""', 1)[0]
+    assert '<option value="orch">目标编排</option>' in html
+    assert '<option value="batch">单批运行</option>' in html
+    assert '<option value="continuous">持续注册</option>' in html
+    assert 'id="field-batch-count" hidden' in html
+    assert 'id="field-add-count"' in html
+    assert 'id="field-risk-pause"' in html
+    assert 'id="mode-help" aria-live="polite"' in html
+    assert 'function syncControlMode()' in mon
+    assert 'mode === "continuous"' in mon
+    assert 'let controlDirty = false;' in mon
+    assert 'if (controlDirty)' in mon
+    assert '系统会自动接续新批次，直到点击停止任务' in mon
+
 def test_help_and_faq_module():
     mon = (ROOT / 'webui/monitor.py').read_text(encoding='utf-8')
     html = mon.split('HTML = r"""', 1)[1].split('"""', 1)[0]
@@ -246,6 +262,7 @@ if __name__ == '__main__':
     test_reference_design_tokens_and_fonts()
     test_reference_motion_and_reduced_motion()
     test_compact_overview_density()
+    test_mode_specific_registration_controls()
     test_help_and_faq_module()
     test_stats_refresh_persists_across_snapshot_polling()
     test_batch_traffic_metric_structure()
