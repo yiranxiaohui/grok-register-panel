@@ -148,7 +148,9 @@ cp config.example.json config.json
 | `grok2api_remote_url` / `grok2api_admin_username` / `grok2api_admin_password` | 远程 Grok2API Admin API（可选） |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 
-Web 控制台的“远程 Grok2API”卡片可保存以上配置并测试管理员登录。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。注册账号远程导入 Grok2API 时会携带该账号本次注册、SSO 与 OAuth 全链路固定使用的代理，并由支持 `proxy_url` 导入的 Grok2API 建立严格账号出口绑定；直连账号不写该字段。
+Web 控制台的“远程 Grok2API”卡片可保存以上配置、测试管理员登录，并把 `grok2api_auth_dir` 内已转换的账号下载为一个可手动导入 Grok2API 的批量 JSON。下载接口始终要求已配置的 `MONITOR_TOKEN`，文件包含访问令牌和刷新令牌，不会在页面中渲染这些凭据。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。
+
+注册账号远程导入 Grok2API 时会携带该账号本次注册、SSO 与 OAuth 全链路固定使用的代理，并由支持 `proxy_url` 导入的 Grok2API 建立严格账号出口绑定；直连账号不写该字段。下载包由本地 Grok2API auth 动态生成，不包含注册时未持久化的账号代理绑定；需要固定账号出口时优先使用远程自动写入。
 
 Docker 镜像由 GitHub Actions 自动发布到 `ghcr.io/yiranxiaohui/grok-register-panel`；部署和持久化目录示例见 [DEPLOYMENT.md](DEPLOYMENT.md#docker--ghcr)。
 
@@ -504,10 +506,13 @@ A: 看 `log/orch100-stdout.log` 与最新 `log/batch-*.log`；欢迎提 issue / 
 **Q: accounts 文本或待处理 SSO 怎么补录 CPA？**
 A: 在控制台使用“账号补录”。待处理模式成功后自动出队；扫描全部账号模式会保留原始文本，并跳过本地 CPA 已存在邮箱。
 
+**Q: 如何把注册结果手动导入 Grok2API？**
+A: 保持 `cpa_auto_add=true` 并配置 `grok2api_auth_dir`，注册完成后在控制台“远程 Grok2API”卡片点击“下载导入 JSON”，再到 Grok2API 的账号管理中导入该文件。下载文件包含敏感 token，请勿公开或长期放在下载目录。
+
 ## 安全
 
 - **必须**设置 `MONITOR_TOKEN`；不要把 token 提交进仓库或贴进公开 issue  
-- **不要提交** `config.json`、`accounts/`、`cpa_auth/`、`proxies.txt`、`log/proxy_pool.json`、`log/email_domain_pool.json`、真实 stickies、`log/monitor.token`
+- **不要提交** `config.json`、`accounts/`、`cpa_auth/`、`grok2api_auth/`、`proxies.txt`、`log/proxy_pool.json`、`log/email_domain_pool.json`、真实 stickies、`log/monitor.token`
 - `.gitignore` 已忽略上述路径  
 - 运行数据、日志、PID、代理和账号文件使用 0600，父目录使用 0700
 - API 响应带 CSP、禁止 iframe、安全类型与 Referrer Policy；请求体上限 64 KiB

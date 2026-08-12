@@ -17,6 +17,7 @@ sys.path.insert(0, str(ROOT))
 from webui import monitor
 from webui import email_domain_store
 from webui import email_provider_store
+from webui import grok2api_export
 from webui import process_utils
 from webui import proxy_store
 
@@ -135,6 +136,76 @@ def test_monitor_http_auth_and_headers():
             os.environ.pop("MONITOR_TOKEN", None)
         else:
             os.environ["MONITOR_TOKEN"] = previous
+
+
+def test_grok2api_export_download_always_requires_monitor_token():
+    token = "test-export-token-123456"
+    previous_token = os.environ.get("MONITOR_TOKEN")
+    previous_config = grok2api_export.CONFIG_PATH
+    previous_default = grok2api_export.DEFAULT_AUTH_DIR
+    with tempfile.TemporaryDirectory() as temp:
+        root = Path(temp)
+        auth_dir = root / "grok2api_auth"
+        auth_dir.mkdir()
+        (auth_dir / "g2a-user@example.test.json").write_text(
+            json.dumps(
+                {
+                    "https://auth.x.ai::example-client-id": {
+                        "key": "example-access-token",
+                        "refresh_token": "example-refresh-token",
+                        "email": "user@example.test",
+                        "user_id": "example-user-id",
+                        "oidc_client_id": "example-client-id",
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        config = root / "config.json"
+        config.write_text(
+            json.dumps({"grok2api_auth_dir": str(auth_dir)}), encoding="utf-8"
+        )
+        grok2api_export.CONFIG_PATH = config
+        grok2api_export.DEFAULT_AUTH_DIR = root / "unused"
+        os.environ.pop("MONITOR_TOKEN", None)
+        server = monitor.ThreadingHTTPServer(("127.0.0.1", 0), monitor.Handler)
+        thread = threading.Thread(target=server.serve_forever, daemon=True)
+        thread.start()
+        base = f"http://127.0.0.1:{server.server_port}"
+        try:
+            status, _, body = request(base + "/api/grok2api/export", method="POST")
+            assert status == 401
+            assert b"example-access-token" not in body
+
+            os.environ["MONITOR_TOKEN"] = token
+            status, _, body = request(base + "/api/grok2api/export", method="POST")
+            assert status == 401
+            assert b"example-access-token" not in body
+
+            status, headers, body = request(
+                base + "/api/grok2api/export", token=token, method="POST"
+            )
+            assert status == 200
+            assert headers.get("Cache-Control") == "no-store"
+            assert headers.get("Content-Type") == "application/octet-stream"
+            assert headers.get("Content-Disposition", "").startswith(
+                'attachment; filename="grok2api-accounts-'
+            )
+            assert headers.get("X-Grok2API-Account-Count") == "1"
+            account = json.loads(body)["accounts"][0]
+            assert account["provider"] == "grok_build"
+            assert account["access_token"] == "example-access-token"
+            assert account["refresh_token"] == "example-refresh-token"
+        finally:
+            server.shutdown()
+            server.server_close()
+            thread.join(timeout=5)
+            grok2api_export.CONFIG_PATH = previous_config
+            grok2api_export.DEFAULT_AUTH_DIR = previous_default
+            if previous_token is None:
+                os.environ.pop("MONITOR_TOKEN", None)
+            else:
+                os.environ["MONITOR_TOKEN"] = previous_token
 
 
 def test_panel_registration_env_enables_guarded_cache():
@@ -497,6 +568,7 @@ if __name__ == "__main__":
     test_compat_process_roots_require_existing_absolute_paths()
     test_process_discovery_aggregates_explicit_release_roots()
     test_monitor_http_auth_and_headers()
+    test_grok2api_export_download_always_requires_monitor_token()
     test_panel_registration_env_enables_guarded_cache()
     test_proxy_api_auth_mutations_and_redaction()
     test_email_domain_api_auth_and_mutations()

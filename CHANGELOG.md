@@ -4,6 +4,7 @@
 
 ### Added
 
+- Download all locally converted Grok2API credentials as one authenticated, import-ready JSON batch from the Web panel.
 - Carry each account's fixed registration proxy into remote Grok2API imports so supported instances create a strict per-account egress binding.
 - Integrate AnyMail domain mailboxes with scoped API-key authentication, domain discovery, OTP polling, cleanup, panel configuration, and managed-domain rotation.
 - Persist owner-only batch traffic history and show rolling average traffic per batch and per successful account in the live panel.

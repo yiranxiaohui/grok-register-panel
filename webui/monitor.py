@@ -58,6 +58,11 @@ try:
         save_grok2api_config,
         test_grok2api_config,
     )
+    from webui.grok2api_export import (
+        Grok2APIExportEmptyError,
+        Grok2APIExportError,
+        build_grok2api_export,
+    )
     from webui.process_utils import (
         find_managed_processes,
         terminate_managed_processes,
@@ -99,6 +104,11 @@ except ImportError:  # running as script from webui/
         read_grok2api_config,
         save_grok2api_config,
         test_grok2api_config,
+    )
+    from grok2api_export import (  # type: ignore
+        Grok2APIExportEmptyError,
+        Grok2APIExportError,
+        build_grok2api_export,
     )
     from process_utils import (  # type: ignore
         find_managed_processes,
@@ -2234,7 +2244,9 @@ HTML = r"""<!DOCTYPE html>
     <div class="button-group" style="margin-top:12px">
       <button class="primary" id="grok2api-save" onclick="saveGrok2APIConfig()">保存配置</button>
       <button id="grok2api-test" onclick="testGrok2APIConnection()">测试连接</button>
+      <button id="grok2api-download" onclick="downloadGrok2APIExport()">下载导入 JSON</button>
     </div>
+    <p class="proxy-format">下载文件可在 Grok2API 账号管理中手动导入，包含访问令牌和刷新令牌，请妥善保存。下载始终要求配置并填写面板 Token。</p>
     <div class="msg" id="grok2api-msg" role="status" aria-live="polite"></div>
   </section>
 
@@ -2936,6 +2948,42 @@ async function testGrok2APIConnection() {
   } catch (e) { setMsg("grok2api-msg", String(e.message || e), "err"); }
   button.disabled = false;
 }
+async function downloadGrok2APIExport() {
+  const button = document.getElementById("grok2api-download");
+  button.disabled = true;
+  setMsg("grok2api-msg", "正在生成 Grok2API 导入文件…", "");
+  try {
+    const headers = {};
+    const tok = getToken();
+    if (tok) headers["Authorization"] = "Bearer " + tok;
+    const response = await fetch("/api/grok2api/export", { method: "POST", headers });
+    if (!response.ok) {
+      const detail = await response.json().catch(() => ({}));
+      if (response.status === 401) {
+        showHelpFor("令牌");
+        throw new Error("访问令牌不匹配，请重新输入当前面板令牌");
+      }
+      throw new Error(detail.error || detail.detail || response.statusText || "下载失败");
+    }
+    const disposition = response.headers.get("Content-Disposition") || "";
+    const matched = disposition.match(/filename="?([^";]+)"?/i);
+    const filename = matched ? matched[1] : "grok2api-accounts.json";
+    const blob = await response.blob();
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = filename;
+    document.body.appendChild(anchor);
+    anchor.click();
+    anchor.remove();
+    window.setTimeout(() => URL.revokeObjectURL(url), 1000);
+    const count = Number(response.headers.get("X-Grok2API-Account-Count") || 0);
+    setMsg("grok2api-msg", count > 0 ? ("已下载 " + count + " 个账号的导入 JSON") : "导入 JSON 已下载", "ok");
+  } catch (e) {
+    setMsg("grok2api-msg", String(e.message || e), "err");
+  }
+  button.disabled = false;
+}
 function domainStatusLabel(status) {
   return ({ active: "轮换中", standby: "待命", blocked: "已拉黑", disabled: "已停用" })[status] || "待命";
 }
@@ -3541,7 +3589,7 @@ class Handler(BaseHTTPRequestHandler):
             return
         super().log_message(fmt, *args)
 
-    def _send(self, code, body, ctype):
+    def _send(self, code, body, ctype, extra_headers=None):
         if isinstance(body, str):
             body = body.encode("utf-8")
         self.send_response(code)
@@ -3568,6 +3616,8 @@ class Handler(BaseHTTPRequestHandler):
             self.send_header("Access-Control-Allow-Origin", allow)
             self.send_header("Access-Control-Allow-Methods", "GET, POST, PATCH, DELETE, OPTIONS")
             self.send_header("Access-Control-Allow-Headers", "Content-Type, Authorization")
+        for name, value in (extra_headers or {}).items():
+            self.send_header(str(name), str(value))
         self.end_headers()
         self.wfile.write(body)
 
@@ -3836,6 +3886,25 @@ class Handler(BaseHTTPRequestHandler):
                 self._json(200 if result.get("ok") else 424, result)
             except ValueError as e:
                 self._json(400, {"ok": False, "error": redact_log_line(str(e))})
+            except Exception as e:
+                self._json(500, {"ok": False, "error": redact_log_line(str(e))})
+            return
+        if u.path == "/api/grok2api/export":
+            try:
+                exported = build_grok2api_export()
+                self._send(
+                    200,
+                    exported.content,
+                    "application/octet-stream",
+                    {
+                        "Content-Disposition": f'attachment; filename="{exported.filename}"',
+                        "X-Grok2API-Account-Count": str(exported.account_count),
+                    },
+                )
+            except Grok2APIExportEmptyError as e:
+                self._json(404, {"ok": False, "error": redact_log_line(str(e))})
+            except Grok2APIExportError as e:
+                self._json(422, {"ok": False, "error": redact_log_line(str(e))})
             except Exception as e:
                 self._json(500, {"ok": False, "error": redact_log_line(str(e))})
             return
