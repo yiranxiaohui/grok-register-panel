@@ -2,6 +2,10 @@
 
 ## Unreleased
 
+### Fixed
+
+- Keep continuous registration alive while every enabled managed proxy is cooling down, and retest network-cooled proxies before automatically resuming.
+
 ### Added
 
 - Add a continuous-registration panel mode that only requires concurrency and automatically starts successive batches until manually stopped.

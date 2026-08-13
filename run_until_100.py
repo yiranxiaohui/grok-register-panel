@@ -16,6 +16,7 @@ from retry_policy import PRECHECK_EXIT_CODE, orchestrator_failure_limit
 from secure_files import append_private_text, best_effort_fchmod, ensure_private_dir
 from webui.blacklist_store import add_asn as add_blacklist_asn
 from webui.blacklist_store import read_blacklist
+from webui.proxy_store import read_proxy_pool, start_proxy_tests
 from webui.process_utils import (
     find_managed_processes,
     terminate_managed_processes,
@@ -34,6 +35,8 @@ RISK_PAUSE = 10
 MAX_ROUNDS = 60
 CONTINUOUS = False
 CONTINUOUS_BATCH_COUNT = 40
+PROXY_COOLDOWN_POLL_SECONDS = 30
+PROXY_TEST_POLL_SECONDS = 2
 CONTROL_FILE = LOG_DIR / "monitor_control.json"
 
 
@@ -280,6 +283,89 @@ def batch_alive(pid: int) -> bool:
     return bool(find_managed_processes(ROOT, ("run_batch_headless.py",)))
 
 
+def wait_for_continuous_proxy_pool() -> bool:
+    """Wait while every enabled managed proxy is cooling down.
+
+    Returns whether a cooldown/test wait was entered. Risk cooldowns become
+    healthy through the store's normal expiry path. Network cooldowns are
+    explicitly probed after expiry before they can be reused.
+    """
+    if not CONTINUOUS:
+        return False
+
+    waited = False
+    network_ids: set[str] = set()
+    while True:
+        try:
+            pool = read_proxy_pool()
+        except Exception as exc:
+            log(f"[proxy-wait] unable to read proxy pool: {exc}")
+            return waited
+
+        items = list(pool.get("items") or [])
+        if not items:
+            return waited
+        enabled = [item for item in items if item.get("enabled")]
+        if not enabled:
+            return waited
+        if any(item.get("stored_status") == "healthy" for item in enabled):
+            if waited:
+                log("[proxy-wait] healthy proxy available, continuous registration resumes")
+            return waited
+
+        test_job = pool.get("test_job") or {}
+        if test_job.get("running"):
+            if not waited:
+                log("[proxy-wait] proxy retest is running, waiting for result")
+            waited = True
+            time.sleep(PROXY_TEST_POLL_SECONDS)
+            continue
+
+        cooling = [
+            item
+            for item in enabled
+            if item.get("stored_status") == "cooldown"
+        ]
+        if len(cooling) == len(enabled):
+            waited = True
+            for item in cooling:
+                if item.get("cooldown_reason") == "network" and item.get("id"):
+                    network_ids.add(str(item["id"]))
+            remaining = max(
+                1,
+                min(int(item.get("cooldown_remaining_seconds") or 1) for item in cooling),
+            )
+            sleep_seconds = min(remaining, PROXY_COOLDOWN_POLL_SECONDS)
+            log(
+                f"[proxy-wait] all {len(enabled)} enabled proxies cooling down; "
+                f"next retry in {sleep_seconds}s (earliest expiry {remaining}s)"
+            )
+            time.sleep(sleep_seconds)
+            continue
+
+        retest_ids = [
+            str(item.get("id"))
+            for item in enabled
+            if str(item.get("id") or "") in network_ids
+            and item.get("stored_status") == "unknown"
+        ]
+        if retest_ids:
+            result = start_proxy_tests(retest_ids)
+            if result.get("ok") or result.get("running"):
+                waited = True
+                log(
+                    f"[proxy-wait] network cooldown expired; "
+                    f"retesting {len(retest_ids)} proxy(s) before reuse"
+                )
+                time.sleep(PROXY_TEST_POLL_SECONDS)
+                continue
+            log(
+                f"[proxy-wait] unable to start proxy retest: "
+                f"{result.get('error') or 'unknown error'}"
+            )
+        return waited
+
+
 def main():
     apply_control()
     kill_batch()
@@ -307,6 +393,8 @@ def main():
     consecutive_batch_failures = 0
     failure_limit = orchestrator_failure_limit()
     while CONTINUOUS or (cpa_count() < TARGET_CPA and round_i < MAX_ROUNDS):
+        if CONTINUOUS:
+            wait_for_continuous_proxy_pool()
         round_i += 1
         current = cpa_count()
         need = None if CONTINUOUS else TARGET_CPA - current
@@ -361,6 +449,17 @@ def main():
             if not alive:
                 return_code = proc.poll()
                 log(f"  batch exited rc={return_code}")
+                if (
+                    CONTINUOUS
+                    and return_code not in (0, None)
+                    and wait_for_continuous_proxy_pool()
+                ):
+                    consecutive_batch_failures = 0
+                    log(
+                        "  batch failure was caused by proxy cooldown; "
+                        "starting a new round"
+                    )
+                    break
                 if return_code == PRECHECK_EXIT_CODE:
                     log("ORCH STOP xAI registration page precheck failed")
                     return
