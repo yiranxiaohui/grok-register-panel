@@ -210,6 +210,9 @@ def test_email_service_and_domain_rotation_panel_structure():
     assert '/api/grok2api/test' in mon
     assert '/api/grok2api/export' in mon
     assert 'id="grok2api-password"' in mon
+    assert 'id="grok2api-type-build"' in mon
+    assert 'id="grok2api-type-web"' in mon
+    assert 'id="grok2api-type-console"' in mon
     assert 'id="grok2api-download"' in mon
     assert 'function downloadGrok2APIExport()' in mon
     assert 'Apple Mail API' not in html

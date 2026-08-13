@@ -1534,6 +1534,21 @@ HTML = r"""<!DOCTYPE html>
   .mail-provider-fields .field { min-width: 0; gap: 5px; }
   .mail-provider-fields input,
   .mail-provider-fields select { width: 100%; min-height: 40px; }
+  .grok2api-type-field { grid-column: 1 / -1; }
+  .grok2api-types { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; min-height: 40px; }
+  .grok2api-types label {
+    display: inline-flex;
+    align-items: center;
+    gap: 7px;
+    min-height: 36px;
+    padding: 7px 11px;
+    border: 1px solid var(--border-strong);
+    border-radius: 2px;
+    background: var(--surface-soft);
+    color: var(--text);
+    cursor: pointer;
+  }
+  input.grok2api-type { width: 16px; min-height: 16px; height: 16px; padding: 0; accent-color: var(--accent); }
   .mail-secret-wrap { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 6px; }
   .mail-secret-wrap button { min-width: 54px; min-height: 40px; padding-inline: 10px; font-size: 11px; }
   .mail-secret-wrap.pending-clear input { border-color: var(--warn); }
@@ -2292,13 +2307,21 @@ HTML = r"""<!DOCTYPE html>
         <input id="grok2api-password" type="password" autocomplete="new-password" placeholder="留空保留已保存密码" oninput="grok2apiPasswordInput()"/>
         <div class="mail-secret-state" id="grok2api-password-state" hidden><span class="mail-secret-note" id="grok2api-password-note">已保存密码</span><button type="button" class="mail-secret-clear" id="grok2api-password-clear" onclick="toggleGrok2APIPasswordClear()">清除</button></div>
       </div>
+      <div class="field grok2api-type-field">
+        <span class="mail-provider-status-label">账号类型</span>
+        <div class="grok2api-types" role="group" aria-label="Grok2API 账号类型">
+          <label><input class="grok2api-type" id="grok2api-type-build" type="checkbox" value="grok_build"/>Build</label>
+          <label><input class="grok2api-type" id="grok2api-type-web" type="checkbox" value="grok_web"/>Web</label>
+          <label><input class="grok2api-type" id="grok2api-type-console" type="checkbox" value="grok_console"/>Console</label>
+        </div>
+      </div>
     </div>
     <div class="button-group" style="margin-top:12px">
       <button class="primary" id="grok2api-save" onclick="saveGrok2APIConfig()">保存配置</button>
       <button id="grok2api-test" onclick="testGrok2APIConnection()">测试连接</button>
-      <button id="grok2api-download" onclick="downloadGrok2APIExport()">下载导入 JSON</button>
+      <button id="grok2api-download" onclick="downloadGrok2APIExport()">下载导入文件</button>
     </div>
-    <p class="proxy-format">下载文件可在 Grok2API 账号管理中手动导入，包含访问令牌和刷新令牌，请妥善保存。下载始终要求配置并填写面板 Token。</p>
+    <p class="proxy-format">Build 使用 OAuth，Web / Console 使用同一注册 SSO；多选时会在 Grok2API 中建立相互关联但状态独立的账号记录。下载文件包含敏感凭据，请妥善保存；下载始终要求配置并填写面板 Token。</p>
     <div class="msg" id="grok2api-msg" role="status" aria-live="polite"></div>
   </section>
 
@@ -2947,6 +2970,8 @@ function renderGrok2APIConfig(data) {
   document.getElementById("grok2api-url").value = data.remote_url || "";
   document.getElementById("grok2api-username").value = data.username || "";
   document.getElementById("grok2api-password").value = "";
+  const selectedTypes = new Set(data.account_types || ["grok_build"]);
+  document.querySelectorAll(".grok2api-type").forEach(input => { input.checked = selectedTypes.has(input.value); });
   grok2apiPasswordClear = false;
   const state = document.getElementById("grok2api-password-state");
   state.hidden = !data.password_configured;
@@ -2961,6 +2986,7 @@ function collectGrok2APISettings() {
     remote_url: document.getElementById("grok2api-url").value,
     username: document.getElementById("grok2api-username").value,
     password: document.getElementById("grok2api-password").value,
+    account_types: Array.from(document.querySelectorAll(".grok2api-type:checked"), input => input.value),
   };
 }
 function toggleGrok2APIPasswordClear() {
@@ -3031,7 +3057,7 @@ async function downloadGrok2APIExport() {
     anchor.remove();
     window.setTimeout(() => URL.revokeObjectURL(url), 1000);
     const count = Number(response.headers.get("X-Grok2API-Account-Count") || 0);
-    setMsg("grok2api-msg", count > 0 ? ("已下载 " + count + " 个账号的导入 JSON") : "导入 JSON 已下载", "ok");
+    setMsg("grok2api-msg", count > 0 ? ("已下载 " + count + " 条账号类型记录") : "导入文件已下载", "ok");
   } catch (e) {
     setMsg("grok2api-msg", String(e.message || e), "err");
   }
@@ -3993,7 +4019,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send(
                     200,
                     exported.content,
-                    "application/octet-stream",
+                    exported.content_type,
                     {
                         "Content-Disposition": f'attachment; filename="{exported.filename}"',
                         "X-Grok2API-Account-Count": str(exported.account_count),

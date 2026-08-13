@@ -17,6 +17,7 @@ tests=(
   tests/test_sso_recovery.py
   tests/test_grok2api_remote.py
   tests/test_grok2api_export.py
+  tests/test_grok2api_worker_integration.py
   tests/test_registration_risk_gate.py
   tests/test_bfs_detect.py
   tests/test_bfs_ops.py
@@ -45,6 +46,7 @@ done
 
 "$PYTHON_BIN" -m compileall -q \
   secure_files.py \
+  grok2api_types.py \
   webui \
   email_providers \
   browser_session.py \

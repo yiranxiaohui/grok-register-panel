@@ -8,6 +8,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from urllib.parse import urlparse
 
+from grok2api_types import normalize_grok2api_account_types
 from secure_files import atomic_write_json, exclusive_file_lock
 from webui.security_utils import redact_log_line
 
@@ -60,6 +61,13 @@ def _url(value: object) -> str:
     return result
 
 
+def _account_types(value: object) -> list[str]:
+    try:
+        return list(normalize_grok2api_account_types(value))
+    except ValueError as exc:
+        raise Grok2APIConfigError(str(exc)) from exc
+
+
 def _public(raw: dict, error: str = "") -> dict:
     try:
         mtime = CONFIG_PATH.stat().st_mtime
@@ -68,12 +76,18 @@ def _public(raw: dict, error: str = "") -> dict:
     remote_url = str(raw.get("grok2api_remote_url") or "")
     username = str(raw.get("grok2api_admin_username") or "")
     has_password = bool(raw.get("grok2api_admin_password"))
+    try:
+        account_types = _account_types(raw.get("grok2api_account_types"))
+    except ValueError as exc:
+        account_types = ["grok_build"]
+        error = error or redact_log_line(str(exc))[:240]
     return {
         "ok": not error,
         "error": error or None,
         "enabled": bool(raw.get("cpa_auto_add")),
         "remote_url": remote_url,
         "username": username,
+        "account_types": account_types,
         "password_configured": has_password,
         "configured": bool(remote_url and username and has_password),
         "config_exists": CONFIG_PATH.exists(),
@@ -90,7 +104,7 @@ def read_grok2api_config() -> dict:
 def _candidate(raw: dict, values: object, clear_password: object = False) -> dict:
     if not isinstance(values, dict):
         raise Grok2APIConfigError("settings 必须是 JSON 对象")
-    allowed = {"enabled", "remote_url", "username", "password"}
+    allowed = {"enabled", "remote_url", "username", "password", "account_types"}
     unknown = sorted(set(values) - allowed)
     if unknown:
         raise Grok2APIConfigError(f"包含不支持的配置字段: {unknown[0]}")
@@ -103,6 +117,8 @@ def _candidate(raw: dict, values: object, clear_password: object = False) -> dic
         updated["grok2api_remote_url"] = _url(values["remote_url"])
     if "username" in values:
         updated["grok2api_admin_username"] = _text(values["username"])
+    if "account_types" in values:
+        updated["grok2api_account_types"] = _account_types(values["account_types"])
     if values.get("password"):
         updated["grok2api_admin_password"] = _text(values["password"], strip=False)
     if clear_password is True:

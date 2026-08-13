@@ -31,6 +31,7 @@
   "grok2api_remote_url": "",
   "grok2api_admin_username": "",
   "grok2api_admin_password": "",
+  "grok2api_account_types": ["grok_build"],
   "bfs_check": true,
   "bfs_skip_cpa": false,
   "bfs_disable_cpa": false,

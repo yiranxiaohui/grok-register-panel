@@ -146,9 +146,12 @@ cp config.example.json config.json
 | `cpa_auth_dir` | 本地 CPA 目录（`xai-*.json`） |
 | `grok2api_auth_dir` | Grok2API 风格 auth 目录 |
 | `grok2api_remote_url` / `grok2api_admin_username` / `grok2api_admin_password` | 远程 Grok2API Admin API（可选） |
+| `grok2api_account_types` | Grok2API 导入类型数组：`grok_build`、`grok_web`、`grok_console`；默认仅 Build |
 | `cpa_remote_url` / `cpa_management_key` | 远程 CPA Management API（可选） |
 
-Web 控制台的“远程 Grok2API”卡片可保存以上配置、测试管理员登录，并把 `grok2api_auth_dir` 内已转换的账号下载为一个可手动导入 Grok2API 的批量 JSON。下载接口始终要求已配置的 `MONITOR_TOKEN`，文件包含访问令牌和刷新令牌，不会在页面中渲染这些凭据。密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。
+Web 控制台的“远程 Grok2API”卡片可保存以上配置、测试管理员登录，并多选 Build、Web 与 Console。Build 使用 OAuth token，Web / Console 使用注册 SSO；同一上游身份会在 Grok2API 中建立相互关联、但额度、健康和路由状态独立的 Provider 记录。默认仍只导入 Build，升级不会自动增加类型。
+
+`grok2api_auth_dir` 内已转换的账号可下载为手动导入文件。只选一种类型时下载对应 JSON；多选时下载 ZIP，其中每种 Provider 各有一个 JSON，应分别在 Grok2API 对应类型的账号导入入口使用。新生成的本地 auth 会一并保存 SSO；旧 auth 下载 Web / Console 时会按邮箱从 `accounts/*.txt` 补取。下载接口始终要求已配置的 `MONITOR_TOKEN`，文件包含敏感凭据且不会在页面中渲染。管理员密码不会回传到浏览器；密码框留空会保留已有值，也可显式清除。
 
 注册账号远程导入 Grok2API 时会携带该账号本次注册、SSO 与 OAuth 全链路固定使用的代理，并由支持 `proxy_url` 导入的 Grok2API 建立严格账号出口绑定；直连账号不写该字段。下载包由本地 Grok2API auth 动态生成，不包含注册时未持久化的账号代理绑定；需要固定账号出口时优先使用远程自动写入。
 
@@ -509,7 +512,7 @@ A: 看 `log/orch100-stdout.log` 与最新 `log/batch-*.log`；欢迎提 issue / 
 A: 在控制台使用“账号补录”。待处理模式成功后自动出队；扫描全部账号模式会保留原始文本，并跳过本地 CPA 已存在邮箱。
 
 **Q: 如何把注册结果手动导入 Grok2API？**
-A: 保持 `cpa_auto_add=true` 并配置 `grok2api_auth_dir`，注册完成后在控制台“远程 Grok2API”卡片点击“下载导入 JSON”，再到 Grok2API 的账号管理中导入该文件。下载文件包含敏感 token，请勿公开或长期放在下载目录。
+A: 保持 `cpa_auto_add=true` 并配置 `grok2api_auth_dir`，在控制台“远程 Grok2API”卡片选择账号类型后点击“下载导入文件”。单类型下载 JSON；多类型下载 ZIP，解压后把 Build、Web、Console JSON 分别放到 Grok2API 对应类型的导入入口。文件包含敏感 token，请勿公开或长期留在下载目录。
 
 ## 安全
 

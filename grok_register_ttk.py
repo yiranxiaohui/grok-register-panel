@@ -32,6 +32,10 @@ import requests as _std_requests
 
 # SSO → CLIProxyAPI(CPA) 扁平格式转换（复用 sso_to_auth_json 的授权码流程 + 写入器）
 import sso_to_auth_json as _s2cpa
+from grok2api_types import (
+    GROK2API_ACCOUNT_TYPE_LABELS,
+    normalize_grok2api_account_types,
+)
 from email_providers import anymail as anymail_provider
 from email_providers import cloudflare as cloudflare_provider
 from email_providers import cloudmail as cloudmail_provider
@@ -1064,6 +1068,14 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
             log_callback(f"[CPA] {str(message).strip()}")
 
     try:
+        g2a_account_types = normalize_grok2api_account_types(
+            config.get("grok2api_account_types")
+        )
+    except ValueError as exc:
+        _cpa_log(f"Grok2API 账号类型配置无效: {exc}")
+        return False
+
+    try:
         token_mode = str(config.get("cpa_token_mode", "device_protocol") or "device_protocol").lower()
         if token_mode not in ("device_protocol", "device_browser", "auth_code"):
             token_mode = "device_protocol"
@@ -1191,17 +1203,35 @@ def add_sso_to_cpa(raw_token, email="", log_callback=None) -> bool:
                 _cpa_log(f"CPA 远程上传失败: {remote_exc}")
         if g2a_dir:
             try:
-                gpath = _s2cpa.write_grok2api_auth(_s2cpa.Path(g2a_dir), token, email=email)
+                gpath = _s2cpa.write_grok2api_auth(
+                    _s2cpa.Path(g2a_dir),
+                    token,
+                    email=email,
+                    sso=sso,
+                )
                 _cpa_log(f"已写入 Grok2API {gpath}")
                 wrote_ok = True
             except Exception as g2a_exc:
                 _cpa_log(f"Grok2API 写入失败: {g2a_exc}")
         if g2a_remote_url:
             try:
-                name = _s2cpa.upload_grok2api_auth_remote(
-                    g2a_remote_url, g2a_username, g2a_password, token, email=email, proxy=proxy
+                names = _s2cpa.upload_grok2api_accounts_remote(
+                    g2a_remote_url,
+                    g2a_username,
+                    g2a_password,
+                    token,
+                    sso=sso,
+                    email=email,
+                    proxy=proxy,
+                    account_types=g2a_account_types,
                 )
-                _cpa_log(f"已上传 Grok2API 远程 {g2a_remote_url.rstrip('/')}/.../{name}")
+                labels = ", ".join(
+                    GROK2API_ACCOUNT_TYPE_LABELS[item] for item in names
+                )
+                _cpa_log(
+                    f"已上传 Grok2API 远程 {g2a_remote_url.rstrip('/')} "
+                    f"({labels})"
+                )
                 wrote_ok = True
             except Exception as g2a_remote_exc:
                 _cpa_log(f"Grok2API 远程上传失败: {g2a_remote_exc}")

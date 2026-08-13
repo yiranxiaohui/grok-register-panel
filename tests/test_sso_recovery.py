@@ -107,6 +107,7 @@ def test_bfs_config_defaults_are_loaded_for_cli():
                 {
                     "cpa_auth_dir": "cpa",
                     "grok2api_auth_dir": "g2a",
+                    "grok2api_account_types": ["grok_console", "grok_web"],
                     "bfs_check": False,
                     "bfs_skip_cpa": True,
                     "bfs_disable_cpa": True,
@@ -135,6 +136,7 @@ def test_bfs_config_defaults_are_loaded_for_cli():
         assert args.bfs_disable is True
         assert args.cpa_auth_dir == str((Path(temp) / "cpa").resolve())
         assert args.grok2api_auth_dir == str((Path(temp) / "g2a").resolve())
+        assert args.grok2api_account_types == ["grok_web", "grok_console"]
 
 
 if __name__ == "__main__":

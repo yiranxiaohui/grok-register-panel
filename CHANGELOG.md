@@ -8,6 +8,7 @@
 
 ### Added
 
+- Import each registered identity into configurable Grok2API Build, Web, and Console providers, with one admin login, provider-specific endpoints, fixed proxy binding, and provider-separated manual downloads.
 - Add a continuous-registration panel mode that only requires concurrency and automatically starts successive batches until manually stopped.
 - Download all locally converted Grok2API credentials as one authenticated, import-ready JSON batch from the Web panel.
 - Carry each account's fixed registration proxy into remote Grok2API imports so supported instances create a strict per-account egress binding.

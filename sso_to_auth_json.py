@@ -43,6 +43,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from curl_cffi import CurlMime, requests
+from grok2api_types import (
+    GROK2API_ACCOUNT_TYPE_LABELS,
+    normalize_grok2api_account_types,
+)
 from secure_files import (
     atomic_write_json,
     atomic_write_text,
@@ -1709,10 +1713,18 @@ def grok2api_auth_filename(entry: dict, email: str = "") -> str:
     return f"g2a-{safe}.json"
 
 
-def write_grok2api_auth(auth_dir: Path, token: dict, email: str = "") -> Path:
+def write_grok2api_auth(
+    auth_dir: Path,
+    token: dict,
+    email: str = "",
+    sso: str = "",
+) -> Path:
     """写出 Grok2API / ~/.grok 风格 auth（issuer::client_id 嵌套）。"""
     ensure_private_dir(auth_dir)
     key, entry = token_to_auth_entry(token, email=email)
+    sso_token = str(sso or "").strip().removeprefix("sso=").strip()
+    if sso_token:
+        entry["sso_token"] = sso_token
     path = auth_dir / grok2api_auth_filename(entry, email=email)
     write_auth_json(path, key, entry)
     return path
@@ -1751,21 +1763,98 @@ def token_to_grok2api_import_record(
     return record
 
 
-def upload_grok2api_auth_remote(
+def sso_to_grok2api_import_record(
+    provider: str,
+    sso: str,
+    email: str = "",
+    proxy_url: str = "",
+) -> dict:
+    """Build one Grok Web or Console SSO import record."""
+    selected = normalize_grok2api_account_types([provider])
+    provider = selected[0]
+    if provider == "grok_build":
+        raise ValueError("Build 账号必须使用 OAuth token 导入")
+    sso_token = str(sso or "").strip().removeprefix("sso=").strip()
+    if not sso_token:
+        raise ValueError(f"{GROK2API_ACCOUNT_TYPE_LABELS[provider]} 账号缺少 SSO")
+    identity = str(email or "").strip()
+    label = GROK2API_ACCOUNT_TYPE_LABELS[provider]
+    record = {
+        "provider": provider,
+        "name": identity or f"Grok {label} account",
+        "email": identity,
+        "sso_token": sso_token,
+    }
+    if provider == "grok_web":
+        record["tier"] = "auto"
+    account_proxy = str(proxy_url or "").strip()
+    if account_proxy:
+        record["proxy_url"] = account_proxy
+    return record
+
+
+def grok2api_import_records(
+    token: dict,
+    *,
+    sso: str = "",
+    email: str = "",
+    proxy_url: str = "",
+    account_types: object = None,
+) -> list[dict]:
+    """Create provider-specific records for one registered xAI identity."""
+    selected = normalize_grok2api_account_types(account_types)
+    records: list[dict] = []
+    for provider in selected:
+        if provider == "grok_build":
+            records.append(
+                token_to_grok2api_import_record(
+                    token,
+                    email=email,
+                    proxy_url=proxy_url,
+                )
+            )
+        else:
+            records.append(
+                sso_to_grok2api_import_record(
+                    provider,
+                    sso,
+                    email=email,
+                    proxy_url=proxy_url,
+                )
+            )
+    return records
+
+
+GROK2API_IMPORT_ENDPOINTS = {
+    "grok_build": "/api/admin/v1/accounts/import",
+    "grok_web": "/api/admin/v1/accounts/web/import",
+    "grok_console": "/api/admin/v1/accounts/console/import",
+}
+
+
+def grok2api_import_filename(record: dict, email: str = "") -> str:
+    provider = str(record.get("provider") or "grok_build")
+    if provider == "grok_build":
+        return grok2api_auth_filename(record, email=email)
+    ident = str(email or record.get("email") or "").strip() or secrets.token_hex(4)
+    safe = _safe_email_for_filename(ident)
+    suffix = provider.removeprefix("grok_")
+    return f"g2a-{suffix}-{safe}.json"
+
+
+def upload_grok2api_accounts_remote(
     base_url: str,
     username: str,
     password: str,
     token: dict,
+    *,
+    sso: str = "",
     email: str = "",
     timeout: int = 30,
     proxy: str = "",
-) -> str:
-    """Login directly and import one Build credential with its fixed account proxy.
-
-    ``proxy`` is written only as Grok2API's per-account ``proxy_url`` import
-    metadata. Admin requests deliberately use the server's direct route so a
-    public account proxy never has to reach a private Grok2API deployment.
-    """
+    account_types: object = None,
+) -> dict[str, str]:
+    """Login once and import the selected provider records independently."""
     base = str(base_url or "").strip().rstrip("/")
     user = str(username or "").strip()
     secret = str(password or "")
@@ -1774,8 +1863,13 @@ def upload_grok2api_auth_remote(
     if not user or not secret:
         raise ValueError("Grok2API 管理员账号或密码为空")
 
-    # An empty explicit proxy disables libcurl's HTTP(S)_PROXY environment
-    # fallback as well as the per-account proxy passed by the worker.
+    records = grok2api_import_records(
+        token,
+        sso=sso,
+        email=email,
+        proxy_url=proxy,
+        account_types=account_types,
+    )
     direct_proxies = {"all": ""}
     login = requests.post(
         f"{base}/api/admin/v1/auth/login",
@@ -1793,33 +1887,67 @@ def upload_grok2api_auth_remote(
     if not access_token:
         raise RuntimeError("Grok2API 登录响应缺少 accessToken")
 
-    record = token_to_grok2api_import_record(token, email=email, proxy_url=proxy)
-    document = json.dumps(record, ensure_ascii=False).encode("utf-8")
-    name = grok2api_auth_filename(record, email=email)
-    multipart = CurlMime()
-    try:
-        multipart.addpart(
-            name="files",
-            filename=name,
-            content_type="application/json",
-            data=document,
-        )
-        imported = requests.post(
-            f"{base}/api/admin/v1/accounts/import",
-            headers={"Authorization": f"Bearer {access_token}"},
-            multipart=multipart,
-            timeout=timeout,
-            proxies=direct_proxies,
-            impersonate="chrome",
-        )
-    finally:
-        multipart.close()
-    if imported.status_code >= 400:
-        raise RuntimeError(f"Grok2API 远程导入失败 HTTP {imported.status_code}")
-    body = str(imported.text or "")
-    if "event: error" in body or "event: complete" not in body:
-        raise RuntimeError("Grok2API 远程导入未返回成功结果")
-    return name
+    imported_names: dict[str, str] = {}
+    for record in records:
+        provider = str(record["provider"])
+        label = GROK2API_ACCOUNT_TYPE_LABELS[provider]
+        document = json.dumps(record, ensure_ascii=False).encode("utf-8")
+        name = grok2api_import_filename(record, email=email)
+        multipart = CurlMime()
+        try:
+            multipart.addpart(
+                name="files",
+                filename=name,
+                content_type="application/json",
+                data=document,
+            )
+            imported = requests.post(
+                f"{base}{GROK2API_IMPORT_ENDPOINTS[provider]}",
+                headers={"Authorization": f"Bearer {access_token}"},
+                multipart=multipart,
+                timeout=timeout,
+                proxies=direct_proxies,
+                impersonate="chrome",
+            )
+        finally:
+            multipart.close()
+        if imported.status_code >= 400:
+            raise RuntimeError(
+                f"Grok2API {label} 远程导入失败 HTTP {imported.status_code}"
+            )
+        body = str(imported.text or "")
+        if "event: error" in body or "event: complete" not in body:
+            raise RuntimeError(f"Grok2API {label} 远程导入未返回成功结果")
+        imported_names[provider] = name
+    return imported_names
+
+
+def upload_grok2api_auth_remote(
+    base_url: str,
+    username: str,
+    password: str,
+    token: dict,
+    email: str = "",
+    timeout: int = 30,
+    proxy: str = "",
+) -> str:
+    """Login directly and import one Build credential with its fixed account proxy.
+
+    ``proxy`` is written only as Grok2API's per-account ``proxy_url`` import
+    metadata. Admin requests deliberately use the server's direct route so a
+    public account proxy never has to reach a private Grok2API deployment.
+    """
+    imported = upload_grok2api_accounts_remote(
+        base_url,
+        username,
+        password,
+        token,
+        email=email,
+        timeout=timeout,
+        proxy=proxy,
+        account_types=["grok_build"],
+    )
+    return imported["grok_build"]
 
 
 def upload_cpa_auth_remote(
@@ -2042,6 +2170,10 @@ def apply_config_defaults(args) -> None:
             args.bfs_skip_write = False
         if getattr(args, "bfs_disable", None) is None:
             args.bfs_disable = False
+        if getattr(args, "grok2api_account_types", None) is None:
+            args.grok2api_account_types = list(
+                normalize_grok2api_account_types(None)
+            )
         args.prefer = args.prefer or "device"
         return
     config_path = Path(args.from_config).expanduser().resolve()
@@ -2056,6 +2188,10 @@ def apply_config_defaults(args) -> None:
     args.grok2api_remote_url = args.grok2api_remote_url or str(config.get("grok2api_remote_url") or "").strip()
     args.grok2api_admin_username = args.grok2api_admin_username or str(config.get("grok2api_admin_username") or "").strip()
     args.grok2api_admin_password = args.grok2api_admin_password or str(config.get("grok2api_admin_password") or "")
+    if getattr(args, "grok2api_account_types", None) is None:
+        args.grok2api_account_types = list(
+            normalize_grok2api_account_types(config.get("grok2api_account_types"))
+        )
     args.proxy = args.proxy or str(config.get("proxy") or "").strip()
     if getattr(args, "bfs_check", None) is None:
         args.bfs_check = _config_bool(config.get("bfs_check"), True)
@@ -2150,6 +2286,13 @@ def main() -> int:
     ap.add_argument("--grok2api-remote-url", default=None, help="远程 Grok2API 地址")
     ap.add_argument("--grok2api-admin-username", default=None, help="远程 Grok2API 管理员账号")
     ap.add_argument("--grok2api-admin-password", default=None, help="远程 Grok2API 管理员密码")
+    ap.add_argument(
+        "--grok2api-account-types",
+        nargs="+",
+        choices=("grok_build", "grok_web", "grok_console"),
+        default=None,
+        help="导入的 Grok2API 类型，可多选；默认 grok_build",
+    )
     ap.add_argument(
         "--prefer",
         choices=("device", "auth_code"),
@@ -2392,18 +2535,31 @@ def main() -> int:
                     print(f"  💾 {args.out}")
 
             if args.grok2api_auth_dir:
-                gp = write_grok2api_auth(Path(args.grok2api_auth_dir), token, email=email)
+                gp = write_grok2api_auth(
+                    Path(args.grok2api_auth_dir),
+                    token,
+                    email=email,
+                    sso=sso,
+                )
                 print(f"  💾 Grok2API → {gp}")
             if args.grok2api_remote_url:
-                name = upload_grok2api_auth_remote(
+                names = upload_grok2api_accounts_remote(
                     args.grok2api_remote_url,
                     args.grok2api_admin_username,
                     args.grok2api_admin_password,
                     token,
+                    sso=sso,
                     email=email,
                     proxy=args.proxy,
+                    account_types=args.grok2api_account_types,
                 )
-                print(f"  💾 Grok2API 远程 → {args.grok2api_remote_url.rstrip('/')}/.../{name}")
+                labels = ", ".join(
+                    GROK2API_ACCOUNT_TYPE_LABELS[item] for item in names
+                )
+                print(
+                    f"  💾 Grok2API 远程 → "
+                    f"{args.grok2api_remote_url.rstrip('/')} ({labels})"
+                )
 
             if args.cpa_auth_dir or args.cpa_remote_url:
                 cpa_record = token_to_cpa_record(

@@ -187,7 +187,7 @@ def test_grok2api_export_download_always_requires_monitor_token():
             )
             assert status == 200
             assert headers.get("Cache-Control") == "no-store"
-            assert headers.get("Content-Type") == "application/octet-stream"
+            assert headers.get("Content-Type") == "application/json"
             assert headers.get("Content-Disposition", "").startswith(
                 'attachment; filename="grok2api-accounts-'
             )
